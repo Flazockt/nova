@@ -1,0 +1,38 @@
+name: Build NOVA Windows Executable
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow onnxruntime numpy protobuf pathvalidate piper-tts
+
+      - name: PyInstaller ausführen
+        run: |
+          pyinstaller --noconsole --onedir --name NOVA nova_overlay.py
+
+      - name: Voice-Modelle in den Build-Ordner kopieren
+        run: |
+          # Kopiert den voice-Ordner (mit Modellen) in das fertige dist/NOVA-Verzeichnis
+          xcopy /E /I voice dist\NOVA\voice
+
+      - name: Artifact hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOVA-windows
+          path: dist/NOVA
