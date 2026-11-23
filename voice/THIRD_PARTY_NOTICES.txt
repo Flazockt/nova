@@ -1,0 +1,20 @@
+Piper text-to-speech engine
+  Package: piper-tts 1.8.0
+  License: GPL-3.0-or-later
+  Source: https://github.com/OHF-Voice/piper1-gpl
+  Note: retained in the voice folder, but not used by the current NOVA app.
+
+German voice model
+  Name: de_DE-mls-medium
+  Dataset: Multilingual LibriSpeech (MLS), OpenSLR 94
+  Dataset license: Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+  Source: https://huggingface.co/rhasspy/piper-voices/tree/main/de/de_DE/mls/medium
+  Model SHA-256: 69CD1D2AA5A35839A518966FCC4924B5F93E5F8C948ED0752B1A616AD53F65BF
+  Model card is included alongside the model files.
+
+The complete Piper license and dependency notices are included in the bundled
+Python package directory. The bundled Windows runtime packages target 64-bit
+Python 3.14; the main NOVA program still runs as a Python script.
+
+The current NOVA app uses the locally installed Microsoft Katja Windows voice.
