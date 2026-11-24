@@ -22,13 +22,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller pillow onnxruntime numpy protobuf pathvalidate piper-tts
 
+      - name: Shop packen (shop/ -> shop.dat)
+        # Nur wenn der Ordner shop/ im Repo liegt; sonst wird die eingecheckte shop.dat benutzt
+        run: |
+          if (Test-Path shop) { python nova_overlay.py --pack }
+          if (-not (Test-Path shop.dat)) { throw "shop.dat fehlt: shop/ oder shop.dat ins Repo legen" }
+
       - name: PyInstaller ausführen
         run: |
-          pyinstaller --noconsole --onedir --name NOVA nova_overlay.py
+          pyinstaller --noconsole --onedir --name NOVA --add-data "shop.dat;." nova_overlay.py
 
       - name: Voice-Modelle in den Build-Ordner kopieren
         run: |
-          # Kopiert den voice-Ordner (mit Modellen) in das fertige dist/NOVA-Verzeichnis
           xcopy /E /I voice dist\NOVA\voice
 
       - name: Artifact hochladen
