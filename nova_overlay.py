@@ -73,6 +73,7 @@ import base64
 import ctypes
 import datetime
 import fnmatch
+import hashlib
 import importlib.util
 import io
 import json
@@ -91,6 +92,7 @@ import time
 import tkinter as tk
 import traceback
 import wave
+import zlib
 import webbrowser
 from collections import OrderedDict
 from tkinter import filedialog as _native_filedialog, messagebox as _native_messagebox
@@ -251,7 +253,7 @@ FOOT_PCT_MAX = 45.0        # max. Abstand der Füße vom unteren Bildrand (% der
 STARTUP_ANIMATION = True   # Einschalt-Animation beim Programmstart
 BOOT_DURATION = 1.8        # Dauer der Einschalt-Animation (Sekunden)
 FRAMES = 10                # Animationsphasen
-MAX_FRAME_CACHE = 120      # begrenzt den Bildspeicher
+MAX_FRAME_CACHE = 200      # begrenzt den Bildspeicher
 FALLBACK_TO_NEUTRAL = True # Emotion ohne Bild -> Normal-Bild statt Zeichnung
 BREAK_MINUTES = 45
 RADIAL_SIZE = 340
@@ -334,12 +336,20 @@ SHOP = {
     "chain": ("Kette", 50),
     "cape": ("Cape", 80),
     "backpack": ("Rucksack", 55),
+    "party": ("Partyhut", 35),
+    "horns": ("Teufelshörner", 60),
+    "flower": ("Blume", 25),
+    "eyepatch": ("Augenklappe", 30),
+    "monocle": ("Monokel", 45),
+    "tie": ("Krawatte", 35),
+    "medal": ("Medaille", 75),
+    "jetpack": ("Jetpack", 120),
 }
 SHOP_CATS = (
-    ("shop_head", "Kopf", "👑", ("halo", "cap", "crown", "tophat", "ears", "antenna")),
-    ("shop_face", "Gesicht", "🕶️", ("visor", "headset", "glasses", "mustache", "mask")),
-    ("shop_body", "Körper", "🧣", ("scarf", "bowtie", "chain")),
-    ("shop_back", "Rücken", "🦋", ("wings", "cape", "backpack")),
+    ("shop_head", "Kopf", "👑", ("halo", "cap", "crown", "tophat", "ears", "antenna", "party", "horns", "flower")),
+    ("shop_face", "Gesicht", "🕶️", ("visor", "headset", "glasses", "mustache", "mask", "eyepatch", "monocle")),
+    ("shop_body", "Körper", "🧣", ("scarf", "bowtie", "chain", "tie", "medal")),
+    ("shop_back", "Rücken", "🦋", ("wings", "cape", "backpack", "jetpack")),
 )
 SHOP_ICONS = {
     "halo": "😇", "cap": "🧢", "crown": "👑", "visor": "🕶️", "scarf": "🧣", "wings": "🦋",
@@ -351,6 +361,185 @@ SHOP_SHORT = {"halo": "Halo", "cap": "Cap", "crown": "Krone", "visor": "Visor",
               "tophat": "Zylinder", "ears": "Ohren", "antenna": "Antenne", "glasses": "Brille",
               "mustache": "Bart", "mask": "Maske", "bowtie": "Fliege", "chain": "Kette",
               "cape": "Cape", "backpack": "Rucksack"}
+SHOP_ICONS.update(party="🥳", horns="😈", flower="🌸", eyepatch="🏴‍☠️", monocle="🧐",
+                  tie="👔", medal="🏅", jetpack="🚀")
+SHOP_SHORT.update(party="Party", horns="Hörner", flower="Blume", eyepatch="Klappe",
+                  monocle="Monokel", tie="Krawatte", medal="Medaille", jetpack="Jetpack")
+# Verbrauchs-Items: key -> (Name, Preis, Icon, Kurzname, Wert, Menge)
+SHOP_ITEMS = {
+    "snack": ("Daten-Snack", 8, "🍙", "Snack", "food", 35),
+    "drink": ("Energy-Drink", 10, "🥤", "Drink", "energy", 40),
+    "toy": ("Spielzeug", 8, "🧸", "Spielzeug", "fun", 35),
+    "mega": ("Mega-Paket", 25, "🎁", "Paket", "all", 40),
+    "xp": ("XP-Booster", 30, "⚡", "XP +20", "xp", 20),
+}
+# Zeichnung neuer Accessoires: (Art, Koordinaten relativ zu Mitte/Kopf, Füllung, Linie, Breite)
+_RED, _GOLD = "#c4122f", "#d4a537"
+SHOP_DRAW = {
+    "party": (("p", (-16, 6, 0, -34, 16, 6), _RED, ACCENT, 2), ("l", (-9, -12, 9, -12), "", LIGHT, 2),
+              ("o", (-5, -41, 5, -31), LIGHT, ACCENT, 1)),
+    "horns": (("p", (-26, 10, -34, -18, -10, 2), _RED, ACCENT, 2),
+              ("p", (26, 10, 34, -18, 10, 2), _RED, ACCENT, 2)),
+    "flower": (("o", (19, -14, 29, -4), LIGHT, EDGE, 1), ("o", (19, 2, 29, 12), LIGHT, EDGE, 1),
+               ("o", (11, -6, 21, 4), LIGHT, EDGE, 1), ("o", (27, -6, 37, 4), LIGHT, EDGE, 1),
+               ("o", (20, -5, 28, 3), ACCENT, "", 1)),
+    "eyepatch": (("l", (-28, 22, 16, 34), "", EDGE, 3), ("o", (6, 24, 28, 46), "#1a0206", ACCENT, 2)),
+    "monocle": (("o", (6, 24, 28, 46), "", LIGHT, 3), ("l", (26, 44, 33, 62, 28, 82), "", LIGHT, 2)),
+    "tie": (("p", (-6, 68, 6, 68, 4, 79, -4, 79), _RED, ACCENT, 2),
+            ("p", (-4, 79, 4, 79, 9, 108, 0, 117, -9, 108), _RED, ACCENT, 2)),
+    "medal": (("l", (-9, 64, 0, 90), "", _RED, 3), ("l", (9, 64, 0, 90), "", _RED, 3),
+              ("o", (-9, 88, 9, 106), _GOLD, LIGHT, 2)),
+    "jetpack": (("r", (28, 74, 40, 116), PANEL2, ACCENT, 2), ("r", (42, 74, 54, 116), PANEL2, ACCENT, 2),
+                ("p", (30, 116, 38, 116, 34, 132), "#ff7a1a", "", 1),
+                ("p", (44, 116, 52, 116, 48, 132), "#ff7a1a", "", 1)),
+}
+# ---- Kisten (CS-Stil): Seltenheit je Teil nach Preis, oder shop.json -> "rarity": common|uncommon|rare|epic|legend|mythic ----
+RARITIES = (("common", "Gewöhnlich", "#8a9bb0"), ("uncommon", "Ungewöhnlich", "#5e98d9"),
+            ("rare", "Selten", "#4b69ff"), ("epic", "Episch", "#8847ff"),
+            ("legend", "Legendär", "#d32ce6"), ("mythic", "Mythisch", "#eb4b4b"))
+# key -> (Name, Preis, Icon, Gewichte je Seltenheit); Duplikate geben 50 % des Teilpreises zurück
+CASES = {"basic": ("Standard-Kiste", 40, "📦", (60, 25, 10, 4, 0.9, 0.1)),
+         "prem": ("Premium-Kiste", 100, "🎁", (20, 35, 25, 13, 5, 2)),
+         "elite": ("Elite-Kiste", 250, "💎", (0, 5, 25, 40, 22, 8))}
+SHOP_RARITY = {}
+CASE_TILE = 104
+
+
+def rar_index(key):
+    r = SHOP_RARITY.get(key)
+    if r:
+        return [x[0] for x in RARITIES].index(r)
+    price = SHOP[key][1]
+    return 0 if price <= 30 else 1 if price <= 45 else 2 if price <= 60 else 3 if price <= 80 else 4 if price <= 100 else 5
+
+
+def case_picker(case):
+    pools = [[k for k in SHOP if rar_index(k) == i] for i in range(len(RARITIES))]
+    weights = CASES[case][3]
+
+    def pick():
+        i = random.choices(range(len(RARITIES)), weights=weights)[0]
+        for j in sorted(range(len(RARITIES)), key=lambda n: (abs(n - i), n > i)):   # leere Stufe -> nächste
+            if pools[j]:
+                return random.choice(pools[j])
+    return pick
+
+
+# ---- Eigene Shop-Teile: PNG in den Ordner "shop" neben der Datei legen ----
+# Dateiname: <kat>_<preis>_<Name>.png   kat = head | face | body | back   (z. B. head_50_Cyber Hut.png)
+# Kurzform "Name.png" = Kopf, 30 Pkt. Optional shop/shop.json: {"Dateiname-ohne-.png": {"name","price","cat","icon","x","y","w"}}
+SHOP_DIR = os.path.join(HERE, "shop")
+SHOP_IMG = {}                 # key -> (Pfad, x, y, Breite); x/y relativ zu Mitte/Kopfoberkante
+_CAT_DEF = {"head": (0, -4, 70), "face": (0, 36, 60), "body": (0, 88, 60), "back": (0, 96, 90)}
+_BASE_CATS = SHOP_CATS
+
+
+_KEY = b"nova-shop-7f3a91c2"          # beliebig ändern, dann neu packen (--pack)
+PULL_BASE = set()                      # eingebaute Teile, die es NUR aus Kisten gibt, z. B. {"jetpack", "crown"}
+SHOP_PULL = set(PULL_BASE)             # + PNGs mit "pull_only": true in shop.json
+
+
+def _xor(data):
+    ks = b"".join(hashlib.sha256(_KEY + i.to_bytes(4, "big")).digest() for i in range(len(data) // 32 + 1))[:len(data)]
+    return (int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(data), "big")
+
+
+def _read_folder():
+    files, cfg = {}, {}
+    if os.path.isdir(SHOP_DIR):
+        for f in sorted(os.listdir(SHOP_DIR)):
+            if f.lower().endswith((".png", ".webp", ".gif")):
+                with open(os.path.join(SHOP_DIR, f), "rb") as fh:
+                    files[f] = fh.read()
+        jp = os.path.join(SHOP_DIR, "shop.json")
+        if os.path.isfile(jp):
+            with open(jp, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+    return files, cfg
+
+
+def pack_shop():
+    """python nova_overlay.py --pack  ->  shop.dat (PNGs + shop.json, verschlüsselt). Danach Ordner shop/ nicht mitgeben."""
+    files, cfg = _read_folder()
+    blob = json.dumps({"cfg": cfg, "f": {n: base64.b64encode(b).decode() for n, b in files.items()}}).encode()
+    with open(os.path.join(HERE, "shop.dat"), "wb") as fh:
+        fh.write(_xor(zlib.compress(blob, 9)))
+    print(f"shop.dat: {len(files)} Teile")
+
+
+def _shop_sources():
+    files, cfg = {}, {}
+    for d in (HERE, getattr(sys, "_MEIPASS", HERE)):
+        p = os.path.join(d, "shop.dat")
+        if os.path.isfile(p):
+            try:
+                with open(p, "rb") as fh:
+                    j = json.loads(zlib.decompress(_xor(fh.read())))
+                cfg.update(j["cfg"])
+                files.update({n: base64.b64decode(v) for n, v in j["f"].items()})
+                break
+            except (OSError, ValueError, zlib.error, KeyError):
+                pass
+    f2, c2 = _read_folder()               # Ordner shop/ überschreibt (Entwicklung)
+    files.update(f2)
+    cfg.update(c2)
+    return files, cfg
+
+
+def load_shop_images():
+    """Liest shop.dat bzw. shop/ neu ein (beim Öffnen des Shops, kein Neustart nötig)."""
+    global SHOP_CATS
+    try:
+        os.makedirs(SHOP_DIR, exist_ok=True)
+        data, cfg = _shop_sources()
+        files = sorted(data)
+    except (OSError, ValueError):
+        return
+    for k in SHOP_IMG:
+        SHOP.pop(k, None)
+        SHOP_ICONS.pop(k, None)
+        SHOP_SHORT.pop(k, None)
+    SHOP_IMG.clear()
+    SHOP_RARITY.clear()
+    SHOP_PULL.clear()
+    SHOP_PULL.update(PULL_BASE)
+    extra = {c: [] for c in _CAT_DEF}
+    for f in files:
+        stem = os.path.splitext(f)[0]
+        parts = stem.split("_", 2)
+        cat, price, name = "head", 30, stem
+        if len(parts) == 3 and parts[0] in _CAT_DEF and parts[1].isdigit():
+            cat, price, name = parts[0], int(parts[1]), parts[2]
+        o = cfg.get(stem, {}) if isinstance(cfg, dict) else {}
+        cat = o.get("cat", cat) if o.get("cat") in _CAT_DEF else cat
+        dx, dy, w = _CAT_DEF[cat]
+        key = "img_" + re.sub(r"\W+", "", stem).lower()
+        SHOP[key] = (str(o.get("name", name)), int(o.get("price", price)))
+        SHOP_ICONS[key] = o.get("icon", "🖼️")
+        SHOP_SHORT[key] = SHOP[key][0][:10]
+        if o.get("rarity") in [x[0] for x in RARITIES]:
+            SHOP_RARITY[key] = o["rarity"]
+        if o.get("pull_only"):
+            SHOP_PULL.add(key)
+        SHOP_IMG[key] = (data[f], o.get("x", dx), o.get("y", dy), o.get("w", w))
+        extra[cat].append(key)
+    SHOP_CATS = tuple((pg, lb, ic, tuple(k for k in keys if k not in SHOP_IMG) + tuple(extra[pg[5:]]))
+                      for pg, lb, ic, keys in _BASE_CATS)
+
+
+load_shop_images()
+# Quests: id -> (Text, Ziel, Belohnung); 3 pro Tag, Bonus bei allen dreien
+QUESTS = {
+    "pet": ("Streichle NOVA", 5, 3),
+    "feed": ("Füttere NOVA", 3, 3),
+    "game": ("Spiele Minispiele", 3, 4),
+    "points": ("Sammle Punkte", 25, 5),
+    "focus": ("Fokus-Timer schaffen", 1, 4),
+    "buy": ("Kaufe im Shop", 1, 3),
+}
+QUEST_BONUS = 6
+DAILY_REWARDS = (3, 4, 5, 6, 8, 10, 20)       # Serientag 1..7, danach wieder von vorn
+
 EMOTIONS = (
     ("neutral", "Normal"),
     ("happy", "Fröhlich"),
@@ -359,6 +548,9 @@ EMOTIONS = (
     ("sleepy", "Müde"),
     ("sit", "Sitzen (Musik)"),
     ("air", "Luft (Wurf/Schütteln)"),
+    ("phone", "Telefon (Bild)"),
+    ("phone_talk", "Telefon sprechend"),
+    ("crosshair", "Fadenkreuz"),
 )
 EMO_ART = {"music": "sit"}          # interne Emotion -> Bild/Text-Schlüssel
 GAME_LABELS = {"dots": "Datenpunkte", "reflex": "Reflex", "jump": "Hüpfen",
@@ -397,7 +589,7 @@ PHYS_ICE_SPIN = 0.05           # sanfte Drehung beim Werfen auf Eis
 SFX_RATE = 22050
 SFX_MIN_GAP = 0.25             # Mindestabstand zwischen zwei Effekten (Sekunden)
 SFX_KIND_GAP = 0.6             # Mindestabstand pro Effekt-Art
-SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land")
+SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land", "tick", "win")
 PHYS_THROW_LINES = ("Wheeee!", "Fliegen kann ich auch!", "Houston, wir haben ein Problem!")
 PHYS_SHAKE_LINES = ("Hey, mir wird schwindelig!", "Nicht schütteln, Choom!", "Alle Pixel verrutschen!")
 PHYS_HIT_LINES = ("Aua!", "Mein Chrom!", "Das war hart, Choom.")
@@ -783,6 +975,15 @@ def synth_sfx(kind):
             t = i / SFX_RATE
             out.append(0.18 * (math.sin(2 * math.pi * 190 * t) * math.exp(-t * 50)
                                + 0.4 * rnd.uniform(-1, 1) * math.exp(-t * 200)))
+    elif kind == "tick":
+        for i in range(count(0.03)):
+            t = i / SFX_RATE
+            out.append(0.22 * math.sin(2 * math.pi * 1900 * t) * math.exp(-t * 160))
+    elif kind == "win":
+        for n, f in enumerate((660, 880, 1320)):
+            for i in range(count(0.14)):
+                t = i / SFX_RATE
+                out.append(0.16 * math.sin(2 * math.pi * f * t) * math.exp(-t * 9))
     else:
         return b""
     fade = min(len(out) // 4, 120)                 # kurz ein-/ausblenden gegen Knacken
@@ -793,6 +994,34 @@ def synth_sfx(kind):
 
 
 # ================= Speicherstand =================
+def default_daily():
+    return {"claimed": "", "day": "", "streak": 0, "ids": [], "prog": {}, "paid": []}
+
+
+def sanitize_daily(raw):
+    d = default_daily()
+    if not isinstance(raw, dict):
+        return d
+    for k in ("claimed", "day"):
+        v = raw.get(k, "")
+        d[k] = v[:10] if isinstance(v, str) else ""
+    try:
+        d["streak"] = max(0, min(9999, int(raw.get("streak", 0))))
+    except (TypeError, ValueError):
+        pass
+    ids = raw.get("ids")
+    d["ids"] = [q for q in ids if q in QUESTS][:3] if isinstance(ids, list) else []
+    prog = raw.get("prog") if isinstance(raw.get("prog"), dict) else {}
+    for q in d["ids"]:
+        try:
+            d["prog"][q] = max(0, int(prog.get(q, 0)))
+        except (TypeError, ValueError):
+            d["prog"][q] = 0
+    paid = raw.get("paid")
+    d["paid"] = [q for q in paid if q in d["ids"] or q == "bonus"] if isinstance(paid, list) else []
+    return d
+
+
 def default_state():
     return {"food": 80.0, "fun": 80.0, "energy": 80.0,
             "points": 0, "xp": 0, "name": "", "owned": [], "worn": [], "acc_pos": {}, "words": {},
@@ -807,7 +1036,7 @@ def default_state():
             "reminders": [], "autoclicker": default_autoclicker(),
             "ai_enabled": False, "ai_provider": "gemini",
             "ai_model": os.environ.get("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL,
-            "last_goodbye": "", "last": time.time()}
+            "daily": default_daily(), "last_goodbye": "", "last": time.time()}
 
 
 def sanitize_state(state):
@@ -831,6 +1060,7 @@ def sanitize_state(state):
     state["name"] = name if isinstance(name, str) else ""
     last_goodbye = state.get("last_goodbye", "")
     state["last_goodbye"] = last_goodbye if isinstance(last_goodbye, str) else ""
+    state["daily"] = sanitize_daily(state.get("daily"))
     for k in ("owned", "worn"):
         value = state.get(k, [])
         state[k] = [x for x in value if x in SHOP] if isinstance(value, list) else []
@@ -890,6 +1120,10 @@ def sanitize_state(state):
         if not isinstance(val, str):
             val = ""
         state[k] = re.sub(r"[\x00-\x1f\x7f]", "", val).strip()[:2048]
+    for old, new in (("phone_image", "phone"), ("phone_talk_image", "phone_talk")):
+        if state[old] and not state["emotion_images"].get(new):
+            state["emotion_images"][new] = state[old]      # Telefonbilder jetzt als Emotionen
+        state[old] = ""
     apps = state.get("controlled_apps", [])
     if not isinstance(apps, list):
         apps = []
@@ -1815,6 +2049,9 @@ class Nova:
         self.emotion_sources = {}
         self.art_cache = {}
         self.frame_cache = OrderedDict()
+        self.crosshair_mode = False
+        self.crosshair_win = None
+        self.crosshair_photo = None
         self.emotion_override = ("", 0.0)
         self.emotion = "neutral"
 
@@ -1953,7 +2190,7 @@ class Nova:
         win.attributes("-topmost", True)
         win.resizable(False, False)
         win.configure(bg=PANEL)
-        width, height = 960, 530
+        width, height = 960, 690
         x = max(0, (win.winfo_screenwidth() - width) // 2)
         y = max(0, (win.winfo_screenheight() - height) // 2)
         win.geometry(f"{width}x{height}+{x}+{y}")
@@ -2128,92 +2365,11 @@ class Nova:
                                    parent=self.root)
 
     def load_phone_image(self):
+        """Telefonbilder sind Emotionen (phone / phone_talk); hier nur Cache leeren."""
         self.phone_source = None
         self.phone_talk_source = None
         self.phone_photo = None
         self.phone_photo_key = None
-        path = self.s.get("phone_image", "")
-        talk_path = self.s.get("phone_talk_image", "")
-        if not path and not talk_path:
-            return
-        if Image is None:
-            messagebox.showwarning(
-                "Pillow erforderlich",
-                "Das Telefonbild kann ohne Pillow nicht geladen werden. Installiere Pillow.",
-                parent=self.root)
-            return
-        if path:
-            if not os.path.isfile(path):
-                messagebox.showwarning(
-                    "Telefonbild nicht gefunden",
-                    f"Das Bild unter diesem Pfad wurde nicht gefunden:\n{path}\n"
-                    "Im Telefonmodus wird stattdessen NOVAs Normalbild verwendet.",
-                    parent=self.root)
-            else:
-                try:
-                    with Image.open(path) as image_file:
-                        self.phone_source = image_file.convert("RGBA")
-                except (OSError, ValueError) as err:
-                    messagebox.showwarning(
-                        "Telefonbild konnte nicht geladen werden",
-                        f"{err}\nIm Telefonmodus wird stattdessen NOVAs Normalbild verwendet.",
-                        parent=self.root)
-        if talk_path and os.path.isfile(talk_path):
-            try:
-                with Image.open(talk_path) as image_file:
-                    self.phone_talk_source = image_file.convert("RGBA")
-            except (OSError, ValueError):
-                pass
-
-    def _choose_phone_image_file(self, target_file, state_key, error_title):
-        """Gemeinsame Auswahl für Telefon- und Sprech-Telefonbild (als PNG neben dem Programm)."""
-        if Image is None:
-            messagebox.showinfo(
-                "Pillow erforderlich",
-                "Installiere Pillow mit: pip install pillow",
-                parent=self.root)
-            return
-        path = filedialog.askopenfilename(parent=self.root, filetypes=IMAGE_FILETYPES)
-        if not path:
-            return
-        if not validate_image(path):
-            messagebox.showerror("Kein gültiges Bild", path, parent=self.root)
-            return
-        try:
-            os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            with Image.open(path) as image_file:
-                image_file.convert("RGBA").save(target_file, format="PNG")
-        except (OSError, ValueError) as err:
-            messagebox.showerror(error_title, str(err), parent=self.root)
-            return
-        self.s[state_key] = target_file
-        self.load_phone_image()
-        self.save()
-
-    def choose_phone_image(self):
-        self._choose_phone_image_file(
-            PHONE_IMAGE_FILE, "phone_image", "Telefonbild konnte nicht gespeichert werden")
-
-    def choose_phone_talk_image(self):
-        self._choose_phone_image_file(
-            PHONE_TALK_IMAGE_FILE, "phone_talk_image",
-            "Sprech-Telefonbild konnte nicht gespeichert werden")
-
-    def reset_phone_image(self):
-        self.s["phone_image"] = ""
-        self.s["phone_talk_image"] = ""
-        self.phone_source = None
-        self.phone_talk_source = None
-        self.phone_photo = None
-        self.phone_photo_key = None
-        self.save()
-        for target in (PHONE_IMAGE_FILE, PHONE_TALK_IMAGE_FILE):
-            try:
-                if os.path.isfile(target):
-                    os.remove(target)
-            except OSError as err:
-                messagebox.showerror("Telefonbild konnte nicht gelöscht werden",
-                                     str(err), parent=self.root)
 
     # ================= Größe & Fußlinie =================
     def open_size_settings(self):
@@ -2525,8 +2681,8 @@ class Nova:
             bob = round(breath)
             shift_x = round(sway * 0.7)
         im = img.resize((max(1, round(img.width * sx)), max(1, round(img.height * sy))),
-                        Image.BICUBIC)
-        im = im.rotate(-ang, resample=Image.BICUBIC, expand=True)
+                        Image.BILINEAR)
+        im = im.rotate(-ang, resample=Image.BILINEAR, expand=True)
         canvas = Image.new("RGBA", (W, height + 40), (0, 0, 0, 0))
         left = (W - im.width) // 2 + shift_x
         top = canvas.height - im.height - bob
@@ -2543,12 +2699,12 @@ class Nova:
     def phone_mode_photo(self, speaking=False):
         if Image is None or ImageOps is None:
             return None
-        if speaking and self.phone_talk_source is not None:
-            key = ("custom_talk", self.s.get("phone_talk_image", ""))
-            source = self.phone_talk_source
-        elif self.phone_source is not None:
-            key = ("custom", self.s.get("phone_image", ""))
-            source = self.phone_source
+        if speaking and "phone_talk" in self.emotion_sources:
+            key = ("emo", "phone_talk")
+            source = self.emotion_sources["phone_talk"]
+        elif "phone" in self.emotion_sources:
+            key = ("emo", "phone")
+            source = self.emotion_sources["phone"]
         else:
             art_key = "happy" if (speaking and "happy" in self.emotion_sources) else self.art_key()
             key = ("emotion", art_key, speaking)
@@ -2580,7 +2736,7 @@ class Nova:
         """Level aus gesamter XP, nicht aus den ausgebbaren Shop-Punkten."""
         return 1 + int(self.s["xp"]) // 50
 
-    def add_points(self, n, announce=True):
+    def add_points(self, n, announce=True, quest=False):
         """Vergibt Punkte und XP; Käufe verringern nur die ausgebbaren Punkte."""
         old = self.level
         self.s["points"] = int(self.s["points"]) + n
@@ -2588,7 +2744,71 @@ class Nova:
         leveled = self.level > old
         if leveled and announce:
             self.say(f"Level {self.level}! Du bist der Beste, Choom.", 6)
+        if n > 0 and not quest:
+            self.quest_event("points", n)
         return leveled
+
+    # ================= Tagesbelohnung & Quests =================
+    def daily_check(self):
+        """Neuer Tag: Login-Belohnung (Serie) und drei frische Quests."""
+        today = datetime.date.today()
+        d = self.s["daily"]
+        if d["day"] == today.isoformat():
+            return
+        yesterday = (today - datetime.timedelta(days=1)).isoformat()
+        d["streak"] = d["streak"] + 1 if d["claimed"] == yesterday else 1
+        d["claimed"] = d["day"] = today.isoformat()
+        d["ids"] = random.Random(d["day"]).sample(list(QUESTS), 3)
+        d["prog"], d["paid"] = {}, []
+        pts = DAILY_REWARDS[(d["streak"] - 1) % len(DAILY_REWARDS)]
+        self.add_points(pts, announce=False, quest=True)
+        self.say(f"Tagesbelohnung: +{pts} Punkte! Serie: {d['streak']}. Neue Quests warten.", 8)
+        self.save()
+
+    def quest_event(self, kind, n=1):
+        d = self.s["daily"]
+        if kind not in d["ids"] or kind in d["paid"]:
+            return
+        text, goal, reward = QUESTS[kind]
+        d["prog"][kind] = min(goal, d["prog"].get(kind, 0) + n)
+        if d["prog"][kind] < goal:
+            return
+        d["paid"].append(kind)
+        extra = ""
+        if all(q in d["paid"] for q in d["ids"]):
+            d["paid"].append("bonus")
+            reward += QUEST_BONUS
+            extra = f" Alle Quests fertig: Bonus +{QUEST_BONUS}!"
+        if self.add_points(reward, announce=False, quest=True):
+            extra += f" Level {self.level}!"
+        msg = f"Quest geschafft: {text}! +{reward} Punkte.{extra}"
+        self.root.after(2500, lambda: None if self.quitting else self.say(msg, 6))
+
+    def show_quests(self):
+        self.daily_check()
+        d = self.s["daily"]
+        parts = [("✔ " if q in d["paid"] else "") + f"{QUESTS[q][0]} {d['prog'].get(q, 0)}/{QUESTS[q][1]}"
+                 f" (+{QUESTS[q][2]})" for q in d["ids"]]
+        self.say(f"Quests · Serie {d['streak']} · " + " | ".join(parts), 10, speak=False)
+
+    def buy_item(self, key):
+        """Verbrauchs-Item: sofort wirksam, jederzeit wieder kaufbar."""
+        name, price, _, _, stat, amt = SHOP_ITEMS[key]
+        if self.s["points"] < price:
+            self.say(f"Dafür fehlen {price - int(self.s['points'])} Punkte.", 4, speak=False)
+            return
+        self.s["points"] -= price
+        if stat == "xp":
+            old = self.level
+            self.s["xp"] += amt
+            extra = f" Level {self.level}!" if self.level > old else ""
+        else:
+            for k in (("food", "fun", "energy") if stat == "all" else (stat,)):
+                self.s[k] = clamp(self.s[k] + amt)
+            extra = ""
+        self.set_emotion_override("happy", 3)
+        self.say(f"{name}! Danke.{extra}", 4)
+        self.quest_event("buy")
 
     # ================= Radialmenü =================
     def radial_page(self, page):
@@ -2600,6 +2820,8 @@ class Nova:
                 {"label": "Füttern", "icon": "🍗", "action": self.feed_word},
                 {"label": "Aufwecken" if self.sleeping else "Schlafen",
                  "icon": "☀️" if self.sleeping else "🌙", "action": self.toggle_sleep},
+                {"label": f"Quests\n{sum(q in self.s['daily']['paid'] for q in self.s['daily']['ids'])}"
+                          f"/{len(self.s['daily']['ids'])}", "icon": "📜", "action": self.show_quests},
                 {"label": "Zurück", "icon": "↩️", "action": go("main")},
             ]
         if page == "tools":
@@ -2664,27 +2886,42 @@ class Nova:
                 {"label": "Rekorde", "icon": "🏆", "action": self.show_highscores},
                 {"label": "Zurück", "icon": "↩️", "action": go("play")},
             ]
+        if page in ("shop", "shop_store"):
+            load_shop_images()
+        if page == "shop_items":
+            items = [{"label": f"{v[3]}\n{v[1]} Pkt", "icon": v[2], "dim": self.s["points"] < v[1],
+                      "action": lambda k=k: self.buy_item(k)} for k, v in SHOP_ITEMS.items()]
+            items.append({"label": "Zurück", "icon": "↩️", "action": go("shop_store")})
+            return f"ITEMS · {int(self.s['points'])} Pkt", items
         if page == "shop":
+            return f"SHOP · {int(self.s['points'])} Pkt", [
+                {"label": "Kisten", "icon": "📦", "action": self.open_case_window},
+                {"label": "Laden", "icon": "🛍️", "action": go("shop_store")},
+                {"label": "Anordnen\nVerschieben", "icon": "✋", "action": self.start_acc_edit},
+                {"label": "Zurück", "icon": "↩️", "action": go("main")},
+            ]
+        if page == "shop_store":
             items = [{"label": label, "icon": icon, "action": go(pg)}
                      for pg, label, icon, _ in SHOP_CATS]
-            items.append({"label": "Anordnen\nVerschieben", "icon": "✋",
-                          "action": self.start_acc_edit})
-            items.append({"label": "Zurück", "icon": "↩️", "action": go("main")})
-            return f"SHOP · {int(self.s['points'])} Pkt", items
+            items.append({"label": "Items", "icon": "🍙", "action": go("shop_items")})
+            items.append({"label": "Zurück", "icon": "↩️", "action": go("shop")})
+            return f"LADEN · {int(self.s['points'])} Pkt", items
         for pg, label, _, keys in SHOP_CATS:
             if page != pg:
                 continue
             items = []
-            for key in keys:
+            for key in sorted(keys, key=lambda k: (rar_index(k), SHOP[k][1])):   # links selten -> rechts rar
                 price = SHOP[key][1]
                 owned = key in self.s["owned"]
                 worn = key in self.s["worn"]
-                text = ('Ablegen' if worn else 'Anlegen') if owned else f"{price} Pkt"
-                items.append({"label": f"{SHOP_SHORT[key]}\n{text}", "icon": SHOP_ICONS[key],
+                pull = key in SHOP_PULL and not owned
+                text = ('Ablegen' if worn else 'Anlegen') if owned else "🔒 Nur Kiste" if pull else f"{price} Pkt"
+                items.append({"label": f"{SHOP_SHORT[key]}\n{text}\n{RARITIES[rar_index(key)][1]}",
+                              "col": RARITIES[rar_index(key)][2], "icon": SHOP_ICONS[key],
                               "action": lambda k=key: self.buy_or_toggle(k),
                               "on": worn if owned else None,
-                              "dim": (not owned) and self.s["points"] < price})
-            items.append({"label": "Zurück", "icon": "↩️", "action": go("shop")})
+                              "dim": pull or ((not owned) and self.s["points"] < price)})
+            items.append({"label": "Zurück", "icon": "↩️", "action": go("shop_store")})
             return f"{label.upper()} · {int(self.s['points'])} Pkt", items
         if page == "audio":
             return "AUDIO", [
@@ -2813,10 +3050,8 @@ class Nova:
                  "on": self.sys_monitor},
                 {"label": "Telefon\nmodus", "icon": "📱", "action": self.toggle_phone_mode,
                  "on": self.phone_mode},
-                {"label": "Telefonbild", "icon": "🖼️", "action": self.choose_phone_image},
-                {"label": "Sprechbild", "icon": "🗣️", "action": self.choose_phone_talk_image},
-                {"label": "Bild\nzurücksetzen", "icon": "↩️",
-                 "action": self.reset_phone_image},
+                {"label": "Fadenkreuz", "icon": "🎯", "action": self.toggle_crosshair,
+                 "on": self.crosshair_mode},
                 {"label": "Zurück", "icon": "↩️", "action": go("settings")},
             ]
         return "NOVA", [
@@ -2955,6 +3190,8 @@ class Nova:
                 fill, outline, tcolor = EDGE, LIGHT, LIGHT
             else:
                 fill, outline, tcolor = PANEL2, ACCENT, LIGHT
+            if item.get("col"):
+                outline = item["col"]
             icon_font = ("Segoe UI Emoji", 17 if item["r0"] >= 27 else 16)
             label_font = ("Consolas", 10, "bold")
             # Im Ruhezustand bleibt nur das Symbol sichtbar; beim Hover erscheint der große Name.
@@ -4615,6 +4852,7 @@ class Nova:
         self.last_pet = now
         self.s["fun"] = clamp(self.s["fun"] + 8)
         self.add_points(1)
+        self.quest_event("pet")
         self.set_emotion_override("happy", 4)
         self.say(random.choice(PET_LINES), 3, ai_context="pet")
 
@@ -4728,6 +4966,8 @@ class Nova:
             leveled = self.add_points(points, announce=False)
         if leveled:
             msg += f" · Level {self.level}!"
+        if score > 0:
+            self.quest_event("game")
         self.set_emotion_override("happy" if score > 0 else "bored", 4)
         self.say(msg, 7)
         if mode == "jump":
@@ -5536,6 +5776,7 @@ class Nova:
         self.s["timer"] = {"end": 0.0, "total": 0.0, "label": ""}
         if label == "Fokus":
             self.add_points(3, announce=False)
+            self.quest_event("focus")
             text = "Fokus geschafft! +3 Punkte. Zeit für eine Pause."
         else:
             text = f"{label} abgelaufen!"
@@ -6219,6 +6460,7 @@ class Nova:
         self.s["food"] = clamp(self.s["food"] + total_food)
         if total_pts:
             self.add_points(total_pts)
+        self.quest_event("feed", len(texts))
         self.set_emotion_override("happy", 4)
         self.say(" ".join(texts[-2:]), 7, ai_context="feed")
 
@@ -6785,11 +7027,26 @@ class Nova:
                 return True, title
         return True, ""
 
-    def update_spotify(self, now):
+    def _spotify_worker(self):
+        """Fensterscan im Hintergrund, damit der Hauptthread nicht ruckelt."""
         try:
-            is_open, title = self.scan_spotify()
+            self._spotify_result = self.scan_spotify()
         except Exception:
+            pass
+        finally:
+            self._spotify_busy = False
+
+    def update_spotify(self, now):
+        result = getattr(self, "_spotify_result", None)
+        self._spotify_result = None
+        if (not getattr(self, "_spotify_busy", False)
+                and now >= getattr(self, "spotify_next_poll", 0.0)):
+            self.spotify_next_poll = now + 1.5
+            self._spotify_busy = True
+            threading.Thread(target=self._spotify_worker, daemon=True).start()
+        if result is None:
             return
+        is_open, title = result
         if not is_open:
             if self.spotify_open:
                 self.reset_spotify_state()
@@ -6967,6 +7224,97 @@ class Nova:
             f"{new_width}x{new_height}+{int(self.x)}+{int(self.y)}")
         self.save()
 
+    # ================= Fadenkreuz-Modus =================
+    CROSSHAIR_SIZE = 120
+    CROSSHAIR_EXIT_DIST = 150      # so weit wegziehen = Modus aus
+
+    def crosshair_center(self):
+        mon = self.current_monitor()
+        return (mon[0] + mon[2]) // 2, (mon[1] + mon[3]) // 2
+
+    def toggle_crosshair(self):
+        if self.crosshair_mode:
+            self.stop_crosshair()
+        else:
+            self.start_crosshair()
+
+    def start_crosshair(self):
+        self.close_radial_menu()
+        self.abort_input()
+        self.cancel_game()
+        n = self.CROSSHAIR_SIZE
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.config(bg=TRANS)
+        try:
+            win.attributes("-transparentcolor", TRANS)
+        except tk.TclError:
+            pass
+        cv = tk.Canvas(win, width=n, height=n, bg=TRANS, highlightthickness=0, cursor="fleur")
+        cv.pack()
+        self.crosshair_photo = None
+        src = self.emotion_sources.get("crosshair")
+        if src is not None and ImageOps is not None:
+            img = ImageOps.contain(src, (n, n), method=Image.LANCZOS)
+            self.crosshair_photo = self._flat_photo(img)   # hartes Alpha -> echte Transparenz
+            cv.create_image(n // 2, n // 2, image=self.crosshair_photo)
+        else:
+            c, r = n // 2, n // 2 - 4
+            cv.create_oval(c - r, c - r, c + r, c + r, fill="#020304", outline="")  # fast unsichtbare Greiffläche
+            cv.create_oval(c - r, c - r, c + r, c + r, outline=ACCENT, width=2)
+            cv.create_oval(c - r // 2, c - r // 2, c + r // 2, c + r // 2, outline=EDGE, width=1)
+            cv.create_line(c, 2, c, c - 8, fill=ACCENT, width=2)
+            cv.create_line(c, c + 8, c, n - 2, fill=ACCENT, width=2)
+            cv.create_line(2, c, c - 8, c, fill=ACCENT, width=2)
+            cv.create_line(c + 8, c, n - 2, c, fill=ACCENT, width=2)
+            cv.create_oval(c - 2, c - 2, c + 2, c + 2, fill=ACCENT, outline="")
+        drag = {}
+
+        def press(e):
+            drag["dx"], drag["dy"] = e.x, e.y
+
+        def motion(e):
+            if "dx" in drag:
+                win.geometry(f"{n}x{n}+{e.x_root - drag['dx']}+{e.y_root - drag['dy']}")
+
+        def release(e):
+            if "dx" not in drag:
+                return
+            drag.clear()
+            cx, cy = self.crosshair_center()
+            mx = win.winfo_x() + n // 2
+            my = win.winfo_y() + n // 2
+            if math.hypot(mx - cx, my - cy) > self.CROSSHAIR_EXIT_DIST:
+                self.stop_crosshair()
+            else:
+                win.geometry(f"{n}x{n}+{cx - n // 2}+{cy - n // 2}")
+
+        cv.bind("<ButtonPress-1>", press)
+        cv.bind("<B1-Motion>", motion)
+        cv.bind("<ButtonRelease-1>", release)
+        cx, cy = self.crosshair_center()
+        win.geometry(f"{n}x{n}+{cx - n // 2}+{cy - n // 2}")
+        self.crosshair_win = win
+        self.crosshair_mode = True
+        self.root.withdraw()
+
+    def stop_crosshair(self):
+        win, self.crosshair_win = self.crosshair_win, None
+        self.crosshair_mode = False
+        self.crosshair_photo = None
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+        try:
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self.last_tick = time.time()
+
     def follow_corner(self):
         mon = self.current_monitor()
         self.x += ((mon[2] - W + 10) - self.x) * 0.2
@@ -7023,6 +7371,190 @@ class Nova:
         now = kernel32.GetTickCount64() & 0xFFFFFFFF
         return ((now - info.dwTime) & 0xFFFFFFFF) / 1000
 
+    # ================= Kisten (CS-Stil) =================
+    def case_sfx(self, kind):
+        """Ton ohne Mindestabstand (für das schnelle Ticken)."""
+        if not self.sfx_enabled or self.quitting:
+            return
+        path = self.sfx_file(kind)
+        if path:
+            try:
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            except (RuntimeError, OSError):
+                pass
+
+    def case_thumb(self, key, bg):
+        cache = self.__dict__.setdefault("_case_th", {})
+        if (key, bg) not in cache:
+            ph, info = None, SHOP_IMG.get(key)
+            if info and Image is not None and ImageTk is not None:
+                try:
+                    im = Image.open(io.BytesIO(info[0])).convert("RGBA")
+                    im.thumbnail((60, 60))
+                    base = Image.new("RGBA", im.size, bg)
+                    base.alpha_composite(im)
+                    ph = ImageTk.PhotoImage(base.convert("RGB"))
+                except (OSError, ValueError):
+                    ph = None
+            cache[(key, bg)] = ph
+        return cache[(key, bg)]
+
+    def open_case_window(self):
+        w = getattr(self, "case_win", None)
+        try:
+            if w is not None and w.winfo_exists():
+                w.deiconify()
+                w.lift()
+                return
+        except tk.TclError:
+            pass
+        load_shop_images()
+        win = self.case_win = NovaToplevel(self.root)
+        win.title("NOVA – Kisten")
+        win.configure(bg=PANEL)
+        win.geometry("640x380")
+        win.protocol("WM_DELETE_WINDOW", self.close_case_window)
+        self.case_busy, self.case_state, self.case_after = False, None, None
+        self.case_sel = getattr(self, "case_sel", "basic")
+        top = tk.Frame(win, bg=PANEL)
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        self.case_pts = tk.Label(top, bg=PANEL, fg=LIGHT, font=("Consolas", 12, "bold"))
+        self.case_pts.pack(side="right")
+        self.case_btns = {}
+        for k, (n, pr, ic, _) in CASES.items():
+            b = nova_button(top, f"{ic} {n}\n{pr} Pkt", lambda k=k: self.case_select(k))
+            b.pack(side="left", padx=(0, 6))
+            self.case_btns[k] = b
+        self.case_cv = tk.Canvas(win, width=616, height=CASE_TILE + 16, bg=PANEL2, highlightthickness=0)
+        self.case_cv.pack(padx=12, pady=8)
+        self.case_cv.bind("<Button-1>", lambda e: self.case_state and self.case_state.update(skip=True))
+        self.case_odds = tk.Frame(win, bg=PANEL)
+        self.case_odds.pack()
+        self.case_res = tk.Label(win, bg=PANEL, fg=LIGHT, font=("Consolas", 11, "bold"), height=2)
+        self.case_res.pack()
+        self.case_open_btn = nova_button(win, "ÖFFNEN", self.case_open, primary=True, width=16)
+        self.case_open_btn.pack(pady=(0, 8))
+        self.case_select(self.case_sel)
+
+    def case_select(self, k):
+        if self.case_busy:
+            return
+        self.case_sel = k
+        for n, b in self.case_btns.items():
+            b.configure(bg=ACCENT if n == k else PANEL2, fg=PANEL if n == k else LIGHT)
+        for ch in self.case_odds.winfo_children():
+            ch.destroy()
+        w = CASES[k][3]
+        for (rid, name, col), x in zip(RARITIES, w):
+            if x:
+                tk.Label(self.case_odds, text=f"{name} {x / sum(w) * 100:.1f}%", bg=PANEL, fg=col,
+                         font=("Consolas", 8, "bold")).pack(side="left", padx=4)
+        self.case_pts.configure(text=f"{int(self.s['points'])} Pkt")
+        pick = case_picker(k)
+        self.case_build_reel([pick() for _ in range(8)])
+        self.case_res.configure(text="Klick aufs Band = überspringen", fg=DIM)
+
+    def case_build_reel(self, items):
+        c, T = self.case_cv, CASE_TILE
+        c.delete("all")
+        for i, key in enumerate(items):
+            col = RARITIES[rar_index(key)][2]
+            x1, x2 = i * T + 3, (i + 1) * T - 3
+            c.create_rectangle(x1, 8, x2, 8 + T, fill=PANEL, outline=col, width=2, tags=("reel", f"r{i}"))
+            c.create_rectangle(x1, 8 + T - 8, x2, 8 + T, fill=col, outline="", tags="reel")
+            ph = self.case_thumb(key, PANEL)
+            if ph:
+                c.create_image((x1 + x2) / 2, 8 + T / 2 - 8, image=ph, tags="reel")
+            else:
+                c.create_text((x1 + x2) / 2, 8 + T / 2 - 8, text=SHOP_ICONS.get(key, "🎁"),
+                              font=("Segoe UI Emoji", 28), fill=LIGHT, tags="reel")
+            c.create_text((x1 + x2) / 2, 8 + T - 18, text=SHOP_SHORT[key], font=("Consolas", 8, "bold"),
+                          fill=LIGHT, tags="reel")
+        cw = int(c["width"])
+        c.create_line(cw / 2, 0, cw / 2, T + 16, fill="#ffd700", width=3, tags="mark")
+        c.create_polygon(cw / 2 - 8, 0, cw / 2 + 8, 0, cw / 2, 10, fill="#ffd700", outline="", tags="mark")
+
+    def case_open(self):
+        if self.case_busy:
+            return
+        k = self.case_sel
+        price = CASES[k][1]
+        if self.s["points"] < price:
+            self.case_res.configure(text=f"Dafür fehlen {price - int(self.s['points'])} Punkte.", fg=ACCENT)
+            return
+        self.s["points"] -= price
+        pick = case_picker(k)
+        N, WIN = 64, 52
+        items = [pick() for _ in range(N)]
+        items[WIN] = pick()
+        cw = int(self.case_cv["width"])
+        self.case_state = {"items": items, "win": WIN, "t0": time.monotonic(), "dur": 6.0, "pos": 0.0, "last": -1,
+                           "target": WIN * CASE_TILE + CASE_TILE / 2 - cw / 2 + random.uniform(-0.4, 0.4) * CASE_TILE,
+                           "cw": cw, "done": False}
+        self.case_busy = True
+        self.case_open_btn.configure(state="disabled")
+        self.case_pts.configure(text=f"{int(self.s['points'])} Pkt")
+        self.case_res.configure(text="…", fg=LIGHT)
+        self.case_build_reel(items)
+        self.case_step()
+
+    def case_step(self):
+        st = self.case_state
+        if not st or st["done"]:
+            return
+        p = 1.0 if st.get("skip") else min(1.0, (time.monotonic() - st["t0"]) / st["dur"])
+        pos = st["target"] * (1 - (1 - p) ** 4)
+        self.case_cv.move("reel", st["pos"] - pos, 0)
+        st["pos"] = pos
+        tile = int((pos + st["cw"] / 2) // CASE_TILE)
+        if tile != st["last"]:
+            st["last"] = tile
+            self.case_sfx("tick")
+        if p >= 1.0:
+            self.case_finish()
+        else:
+            self.case_after = self.case_win.after(16, self.case_step)
+
+    def case_finish(self):
+        st = self.case_state
+        if not st or st["done"]:
+            return
+        st["done"] = True
+        key = st["items"][st["win"]]
+        name, price = SHOP[key]
+        ri = rar_index(key)
+        rname, rcol = RARITIES[ri][1], RARITIES[ri][2]
+        if key in self.s["owned"]:
+            back = price // 2
+            self.s["points"] += back
+            msg = f"{name} ({rname}) · Duplikat +{back} Pkt"
+        else:
+            self.s["owned"].append(key)
+            self.s["worn"].append(key)
+            msg = f"{name} ({rname}) · NEU!"
+        try:
+            self.case_cv.itemconfigure(f"r{st['win']}", outline="#ffffff", width=4)
+            self.case_res.configure(text=msg, fg=rcol)
+            self.case_pts.configure(text=f"{int(self.s['points'])} Pkt")
+            self.case_open_btn.configure(state="normal")
+        except tk.TclError:
+            pass
+        self.case_busy = False
+        if ri >= 3:
+            self.case_sfx("win")
+        self.say(f"{name}! {rname}.", 4, speak=False)
+        self.quest_event("buy")
+        self.save()
+
+    def close_case_window(self):
+        if self.case_busy:
+            self.case_finish()
+        win, self.case_win = self.case_win, None
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
+
     # ================= Shop & Sprechblase =================
     def buy_or_toggle(self, key):
         """Kauft ein Accessoire einmalig; danach kostenlos an-/ablegen."""
@@ -7033,11 +7565,15 @@ class Nova:
             else:
                 self.s["worn"].append(key)
             return
+        if key in SHOP_PULL:
+            self.say("Das gibt es nur aus Kisten!", 3, speak=False)
+            return
         if self.s["points"] >= price:
             self.s["points"] -= price
             self.s["owned"].append(key)
             self.s["worn"].append(key)
             self.say(f"{name}! Steht mir, oder?", 4)
+            self.quest_event("buy")
         else:
             self.say(f"Dafür fehlen {price - int(self.s['points'])} Punkte.", 4, speak=False)
 
@@ -8311,6 +8847,35 @@ class Nova:
             marks.append(("backpack", c.create_text(0, 0, text="", tags="acc")))
             c.create_rectangle(cx + 28, top + 78, cx + 52, top + 118, fill=PANEL2, outline=ACCENT, width=2, tags="acc")
             c.create_rectangle(cx + 32, top + 98, cx + 48, top + 112, outline=EDGE, width=2, tags="acc")
+        for key, (path, ix, iy, iw) in SHOP_IMG.items():
+            if key not in worn or Image is None or ImageTk is None:
+                continue
+            sc = (self.s["acc_pos"].get(key) or (0, 0, 1.0))[2]
+            ck = (key, round(sc, 2))
+            cache = self.__dict__.setdefault("_shop_ph", {})
+            if ck not in cache:
+                try:
+                    im = Image.open(io.BytesIO(path)).convert("RGBA")
+                    r = iw * sc / im.width
+                    im = im.resize((max(1, int(im.width * r)), max(1, int(im.height * r))), Image.LANCZOS)
+                    cache[ck] = (self._flat_photo(im), self._flat_photo(ImageOps.mirror(im)))
+                except (OSError, ValueError):
+                    cache[ck] = None
+            if not cache[ck]:
+                continue
+            marks.append((key, c.create_text(0, 0, text="", tags="acc")))
+            c.create_image(cx + ix, top + iy, image=cache[ck][0], tags=("acc", "shopimg", key))
+        for key, shapes in SHOP_DRAW.items():
+            if key not in worn:
+                continue
+            marks.append((key, c.create_text(0, 0, text="", tags="acc")))
+            for kind, co, fill, line, wd in shapes:
+                pts = [cx + v if i % 2 == 0 else top + v for i, v in enumerate(co)]
+                if kind == "l":
+                    c.create_line(*pts, fill=line, width=wd, tags="acc")
+                else:
+                    make = {"p": c.create_polygon, "o": c.create_oval, "r": c.create_rectangle}[kind]
+                    make(*pts, fill=fill, outline=line, width=wd, tags="acc")
         self.acc_ranges = []
         mirrored, walk_dx, walk_dy, lean = False, 0, 0, 0.0
         if marks and not getattr(self, "acc_edit", False) and self.art_key() is not None:
@@ -8330,6 +8895,12 @@ class Nova:
                 lean = math.radians(sway * 0.8)
             if mirrored:
                 c.scale("acc", cx, 0, -1, 1)
+                for t in c.find_withtag("shopimg"):
+                    key = c.gettags(t)[2]
+                    x, y = c.coords(t)
+                    c.coords(t, 2 * cx - x, y)
+                    ck = (key, round((self.s["acc_pos"].get(key) or (0, 0, 1.0))[2], 2))
+                    c.itemconfigure(t, image=self._shop_ph[ck][1])
         all_ids = c.find_withtag("acc") if marks else ()
         for n, (key, mid) in enumerate(marks):
             end = marks[n + 1][1] if n + 1 < len(marks) else 1 << 60
@@ -8746,6 +9317,10 @@ class Nova:
                 self.draw_startup()
                 return
             self.boot_started = 0.0
+        if self.crosshair_mode:          # alles andere aus
+            self.last_tick = now
+            self._schedule_tick(150)
+            return
         self.process_ai_results()
         self.process_ai_speech_results()
         self.process_ai_voice_results()
@@ -8792,8 +9367,7 @@ class Nova:
                 elif self.ram_percent >= 90:
                     self.last_sys_warn = now
                     self.say(f"Speicher kritisch: {int(self.ram_percent)}% RAM belegt!", 5)
-        if IS_WIN and self.spotify_mode and now >= self.spotify_next_poll:
-            self.spotify_next_poll = now + 1.0
+        if IS_WIN and self.spotify_mode:
             self.update_spotify(now)
         self.update_emotion()
         self.air_now = self.air_pose()
@@ -8802,6 +9376,8 @@ class Nova:
             self.update_mini()
         if self.t // 6 != self._tp // 6:
             self.remember_foreground_window()
+        if self.t // 300 != self._tp // 300:      # alle ~10 s: neuer Tag?
+            self.daily_check()
         self.update_living_cursor(now)
         if (self.feeding or self.prompt) and now > self.feed_deadline:
             self.cancel_feed()
@@ -8871,6 +9447,9 @@ class Nova:
         sitting = self.music_visible()
         hover = (math.sin(self.t * 0.08) * (7 if self.airborne() else 4)
                  if not self.sleeping and not menu_open and not sitting else 0)
+        if sitting and self.spotify_playing and not self.sleeping and not menu_open:
+            # Mitwippen im Takt (~120 BPM): kleiner Hüpfer nach oben + sanftes Wiegen
+            hover = -abs(math.sin(self.t * 0.21)) * 4
         base = H - 5 - self.music_offset() + hover
         top = base - self.figure_h()
 
@@ -8897,4 +9476,7 @@ class Nova:
 
 
 if __name__ == "__main__":
-    Nova()
+    if "--pack" in sys.argv:
+        pack_shop()
+    else:
+        Nova()

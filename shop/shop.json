@@ -1,0 +1,26 @@
+{
+  "_anleitung": [
+    "=== NOVA Shop: Anleitung (dieser Block wird ignoriert) ===",
+    "1) PNG in den Ordner shop/ legen. Dateiname: <kat>_<preis>_<Name>.png, kat = head | face | body | back, z. B. head_50_Cyber Hut.png",
+    "   Kurzform 'Name.png' = Kategorie Kopf, 30 Pkt.",
+    "2) Optional hier einen Eintrag mit dem Dateinamen OHNE .png anlegen, z. B. \"head_50_Cyber Hut\": {...}",
+    "3) Felder (alle optional): name, price, cat, icon (Emoji), x, y, w (Position/Breite), rarity, pull_only",
+    "   rarity: common | uncommon | rare | epic | legend | mythic (ohne Angabe richtet sie sich nach dem Preis)",
+    "   pull_only: true = nur aus Kisten ziehbar, nicht kaufbar (im Laden: 'Nur Kiste')",
+    "4) Eingebaute Teile (Jetpack, Krone ...) nur-ziehbar machen: im Code oben PULL_BASE = {\"jetpack\", \"crown\"}",
+    "5) Kisten, Preise, Chancen: im Code oben im Block CASES",
+    "6) Testen: Dateien ändern, Shop im Overlay neu öffnen (kein Neustart nötig)",
+    "7) Verstecken: python nova_overlay.py --pack  ->  shop.dat. Danach shop/ nicht mehr weitergeben (nur shop.dat, per --add-data in die exe)",
+    "8) GitHub: Workflow packt automatisch, wenn shop/ im Repo liegt. Repo auf PRIVAT stellen, sonst sind die PNGs öffentlich sichtbar.",
+    "   Alternative: shop/ in .gitignore, nur die fertige shop.dat einchecken.",
+    "9) Nach jeder Änderung an PNGs oder dieser Datei neu packen. _KEY im Code ändern = alte shop.dat ungültig."
+  ],
+  "sword": {
+    "cat": "body",
+    "name": "Sword",
+    "price": 50,
+    "icon": "⚔️",
+    "rarity": "mythic",
+    "pull_only": true
+  }
+}
