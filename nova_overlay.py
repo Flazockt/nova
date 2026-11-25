@@ -9500,11 +9500,10 @@ class Nova:
         c.create_polygon(W // 2 - 8, y2 + 6, W // 2 + 8, y2 + 6, W // 2, y2 + 16, fill=ACCENT, outline="")
 
     def _flat_photo(self, im):
-        """RGBA-Bild -> PhotoImage mit Transparenzfarbe (hartes Alpha wie bei den Figurenbildern)."""
-        alpha = im.getchannel("A").point(lambda v: 255 if v > 140 else 0)
-        flat = Image.new("RGB", im.size, (1, 2, 3))
-        flat.paste(im.convert("RGB"), (0, 0), alpha)
-        return ImageTk.PhotoImage(flat)
+        """RGBA-Bild -> PhotoImage mit hartem Alpha (0/255); lässt darunterliegende Items sichtbar."""
+        im = im.convert("RGBA")
+        im.putalpha(im.getchannel("A").point(lambda v: 255 if v > 140 else 0))
+        return ImageTk.PhotoImage(im)
 
     def glitch_bands(self, im, strength, bands):
         """Verschiebt zufällige waagerechte Streifen seitlich (Glitch-Effekt)."""
