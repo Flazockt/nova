@@ -548,6 +548,7 @@ EMOTIONS = (
     ("sleepy", "Müde"),
     ("sit", "Sitzen (Musik)"),
     ("air", "Luft (Wurf/Schütteln)"),
+    ("burst", "Geplatzt (harter Wandaufprall)"),
     ("phone", "Telefon (Bild)"),
     ("phone_talk", "Telefon sprechend"),
     ("crosshair", "Fadenkreuz"),
@@ -573,6 +574,11 @@ PHYS_GRAVITY = 2300.0          # Fallbeschleunigung
 PHYS_MAX_FALL = 2600.0         # maximale Fallgeschwindigkeit
 PHYS_AIR_DRAG = 0.15           # Luftreibung (pro Sekunde)
 PHYS_FLOOR_BOUNCE = 0.42       # Rückprall am Boden
+BURST_SPEED = 600.0           # ab diesem Wandtempo (px/s) platzt NOVA
+BURST_SECONDS = 9           # Gesamtdauer (Blut bleibt, NOVA steht still)
+BURST_STICK = 70              # so viele px steckt NOVA nach dem Platzen in der Wand
+BURST_RETURN = 0.8           # Dauer des Rückwegs nach dem Platzen (Glitch wie Cosmetics)
+BURST_HIDE = 3.0              # so lange ist NOVA weg, Stücke fliegen
 PHYS_WALL_BOUNCE = 0.6         # Rückprall an Wänden und Decke
 PHYS_FLOOR_FRICTION = 7.0      # Rutschreibung am Boden
 PHYS_REST_SPEED = 220.0        # darunter hüpft NOVA nicht mehr
@@ -589,7 +595,7 @@ PHYS_ICE_SPIN = 0.05           # sanfte Drehung beim Werfen auf Eis
 SFX_RATE = 22050
 SFX_MIN_GAP = 0.25             # Mindestabstand zwischen zwei Effekten (Sekunden)
 SFX_KIND_GAP = 0.6             # Mindestabstand pro Effekt-Art
-SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land", "tick", "win")
+SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land", "tick", "win", "burst")
 PHYS_THROW_LINES = ("Wheeee!", "Fliegen kann ich auch!", "Houston, wir haben ein Problem!")
 PHYS_SHAKE_LINES = ("Hey, mir wird schwindelig!", "Nicht schütteln, Choom!", "Alle Pixel verrutschen!")
 PHYS_HIT_LINES = ("Aua!", "Mein Chrom!", "Das war hart, Choom.")
@@ -975,6 +981,19 @@ def synth_sfx(kind):
             t = i / SFX_RATE
             out.append(0.18 * (math.sin(2 * math.pi * 190 * t) * math.exp(-t * 50)
                                + 0.4 * rnd.uniform(-1, 1) * math.exp(-t * 200)))
+    elif kind == "burst":                          # Platzen: tiefer Knall + nasses Spritzen + Pops
+        y, phase = 0.0, 0.0
+        pops = [rnd.uniform(0.04, 0.3) for _ in range(6)]
+        for i in range(count(0.5)):
+            t = i / SFX_RATE
+            phase += 2 * math.pi * (40 + 90 * math.exp(-t * 18)) / SFX_RATE
+            y += 0.35 * (rnd.uniform(-1, 1) - y)
+            pop = sum(math.sin(2 * math.pi * 520 * (t - p0)) * math.exp(-(t - p0) * 90)
+                      for p0 in pops if t >= p0)
+            out.append(0.55 * math.sin(phase) * math.exp(-t * 9)
+                       + 0.5 * y * math.exp(-t * 14)
+                       + 0.14 * pop
+                       + 0.35 * rnd.uniform(-1, 1) * math.exp(-t * 90))
     elif kind == "tick":
         for i in range(count(0.03)):
             t = i / SFX_RATE
@@ -1030,7 +1049,7 @@ def default_state():
             "mini_manual": False, "walking": True, "voice_enabled": False,
             "phone_mode": False, "phone_image": "", "phone_talk_image": "",
             "living_mode": False, "sys_monitor": False, "synth_voice": True,
-            "controlled_apps": [], "fav_apps": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True,
+            "controlled_apps": [], "fav_apps": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False,
             "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
             "idle": default_idle(), "timer": {"end": 0.0, "total": 0.0, "label": ""},
             "reminders": [], "autoclicker": default_autoclicker(),
@@ -1091,7 +1110,7 @@ def sanitize_state(state):
     state["words"] = dict(list(words.items())[:MAX_WORDS])
     for k in ("emotion_setup_done", "window_mode", "mini_auto", "mini_manual",
               "walking", "voice_enabled", "phone_mode", "living_mode",
-              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx"):
+              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode"):
         state[k] = bool(state.get(k, base[k]))
     for k, lo, hi in (("bubble_dy", -90, 280), ("hud_dy", 0, 320)):
         try:
@@ -1852,6 +1871,143 @@ filedialog = _NovaFileDialog()
 
 
 
+class CosmeticPiece:
+    """Ein Cosmetic als eigenes durchsichtiges Mini-Fenster mit eigener Physik."""
+    PAD = 4
+    OPTS = ("fill", "outline", "width", "start", "extent", "style", "image",
+            "capstyle", "joinstyle", "smooth")
+
+    def __init__(self, nova, src, ids, key):
+        boxes = [b for b in (src.bbox(t) for t in ids) if b]
+        if not boxes:
+            raise ValueError("leer")
+        x1, y1 = min(b[0] for b in boxes) - self.PAD, min(b[1] for b in boxes) - self.PAD
+        x2, y2 = max(b[2] for b in boxes) + self.PAD, max(b[3] for b in boxes) + self.PAD
+        self.key, self.w, self.h = key, int(x2 - x1), int(y2 - y1)
+        self.rx, self.ry = x1, y1
+        self.x, self.y = nova.x + x1, nova.y + y1
+        self.vx = self.vy = 0.0
+        self.mode, self.rest_since, self.t0, self._geo = "fall", None, 0.0, None
+        self.win = self.hwnd = None
+        self.specs = []                                 # Zeichnung nur merken, Fenster kommt später
+        for t in ids:
+            kind = src.type(t)
+            if kind not in ("polygon", "line", "rectangle", "oval", "arc", "image"):
+                continue
+            if src.itemcget(t, "state") == "hidden":
+                continue
+            co = [v - x1 if i % 2 == 0 else v - y1 for i, v in enumerate(src.coords(t))]
+            kw = {}
+            for o in self.OPTS:
+                try:
+                    v = src.itemcget(t, o)
+                except tk.TclError:
+                    continue
+                if v != "" or o in ("fill", "outline"):
+                    kw[o] = v
+            self.specs.append((kind, co, kw))
+
+    def build(self, nova):
+        self.win = tk.Toplevel(nova.root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.config(bg=TRANS)
+        try:
+            self.win.attributes("-transparentcolor", TRANS)
+        except tk.TclError:
+            pass
+        self.cv = tk.Canvas(self.win, width=self.w, height=self.h, bg=TRANS, highlightthickness=0)
+        self.cv.pack()
+        for kind, co, kw in self.specs:
+            try:
+                getattr(self.cv, "create_" + kind)(*co, tags="p", **kw)
+            except tk.TclError:
+                pass
+        self.gl = [self.cv.create_rectangle(0, 0, 1, 1, fill=ACCENT, outline="", state="hidden")
+                   for _ in range(3)]
+        self.win.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
+        self.win.update_idletasks()
+        if IS_WIN:
+            try:
+                self.hwnd = user32.GetAncestor(self.win.winfo_id(), 2) or None
+            except Exception:
+                self.hwnd = None
+        self._geo = None
+
+    def place(self):
+        if self.win is None:
+            return
+        g = (int(self.x), int(self.y))
+        if g == self._geo:
+            return
+        self._geo = g
+        if self.hwnd:                                   # direkt per Win32: viel billiger als Tk
+            user32.SetWindowPos(self.hwnd, None, g[0], g[1], 0, 0, 0x15)
+        else:
+            self.win.geometry(f"{self.w}x{self.h}+{g[0]}+{g[1]}")
+
+    def launch(self, vx, vy):
+        self.mode, self.vx, self.vy, self.rest_since = "fall", vx, vy, None
+
+    def begin_return(self, now):
+        self.mode, self.t0, self.sx, self.sy = "return", now, self.x, self.y
+
+    def step(self, n, now, dt, vb):
+        if self.win is None and n._swarm_budget > 0:
+            n._swarm_budget -= 1
+            self.build(n)
+        if self.mode == "fall":
+            if self.rest_since:
+                return                                  # liegt still: kostet nichts
+            self.vy = min(PHYS_MAX_FALL, self.vy + PHYS_GRAVITY * dt)
+            self.vx *= math.exp(-PHYS_AIR_DRAG * dt)
+            self.x += self.vx * dt
+            self.y += self.vy * dt
+            vl, vt, vr, _ = vb
+            if self.x < vl:
+                self.x, self.vx = vl, abs(self.vx) * PHYS_WALL_BOUNCE
+            elif self.x + self.w > vr:
+                self.x, self.vx = vr - self.w, -abs(self.vx) * PHYS_WALL_BOUNCE
+            if self.y < vt:
+                self.y, self.vy = vt, abs(self.vy) * PHYS_WALL_BOUNCE
+            mon = n.monitor_at(self.x + self.w / 2, self.y + self.h / 2)
+            floor = mon[4] + n.s.get("ground_offset", 0)
+            on_floor = False
+            if self.y + self.h >= floor:
+                on_floor = True
+                self.y = floor - self.h
+                self.vy = -self.vy * PHYS_FLOOR_BOUNCE if self.vy > 180 else 0.0
+                self.vx *= math.exp(-PHYS_FLOOR_FRICTION * dt)
+                if abs(self.vx) < 12:
+                    self.vx = 0.0
+            if on_floor and self.vy == 0.0 and self.vx == 0.0:
+                self.rest_since = now
+        elif self.mode == "return":
+            p = min(1.0, (now - self.t0) / 0.8)
+            q = (1 - p) ** 3
+            tx, ty = n.x + self.rx, n.y + self.ry
+            self.x = tx + (self.sx - tx) * q + random.randint(-7, 7) * (1 - p) * 1.5
+            self.y = ty + (self.sy - ty) * q
+            if self.win is not None and int(now * 30) % 2 == 0:   # Flackern + Streifen nur jeden 2. Frame
+                hide = random.random() < 0.35 * (1 - p * 0.6)
+                self.cv.itemconfigure("p", state="hidden" if hide else "normal")
+                for r in self.gl:
+                    gy = random.uniform(0, self.h)
+                    self.cv.coords(r, 0, gy, self.w, gy + random.randint(1, 3))
+                    self.cv.itemconfigure(r, state="normal", fill=random.choice((ACCENT, LIGHT)))
+            if p >= 1.0:
+                self.mode = "done"
+        self.place()
+
+    def destroy(self):
+        if self.win is not None:
+            try:
+                self.win.destroy()
+            except tk.TclError:
+                pass
+            self.win = None
+
+
 class Nova:
     def __init__(self):
         self.root = tk.Tk()
@@ -2100,10 +2256,14 @@ class Nova:
         self.air_hold = False              # losgelassen ohne Wurf: bleibt in der Luft stehen
         self.ice_free = False              # Musikmodus: NOVA liegt nach dem Rutschen frei im Bild
         self.sfx_enabled = self.s["sfx"]
+        self.burst_mode = self.s["burst_mode"]
+        self.burst_until = self.burst_t0 = 0.0
+        self.burst_parts, self.burst_blood, self.burst_shards_list = [], [], []
         self.sfx_dir = None
         self.sfx_files = {}
         self.sfx_last = -99.0
         self.sfx_last_kind = {}
+        self.root.after(1500, self.sfx_prewarm)  # WAVs vorab erzeugen
 
         # ---- Radialmenü ----
         self.radial_window = None
@@ -2478,6 +2638,15 @@ class Nova:
                "0 = Oberkante der Taskleiste. Plus = tiefer, minus = höher.",
                ground_var, GROUND_OFFSET_MIN, GROUND_OFFSET_MAX, 1)
 
+        head_var = tk.DoubleVar(value=self.s.get("head_pct", 0))
+
+        def head_changed(*_):
+            self.s["head_pct"] = float(head_var.get())
+
+        slider("Kopfhöhe (%)",
+               "Nur Position des Kopfes (Decken-Treffer). Plus = Kopf höher, minus = tiefer.",
+               head_var, -50, 50, 1, cmd=head_changed)
+
         bub_var = tk.DoubleVar(value=self.s.get("bubble_dy", 0))
         hud_var = tk.DoubleVar(value=self.s.get("hud_dy", 0))
 
@@ -2518,6 +2687,8 @@ class Nova:
             sit_var.set(0)
             air_var.set(0)
             ground_var.set(0)
+            head_var.set(0)
+            head_changed()
             fps_var.set(30)
             bub_var.set(0)
             hud_var.set(0)
@@ -2595,7 +2766,8 @@ class Nova:
         """Welches Bild gilt gerade? Emotion -> Normal -> None (gezeichnete Figur)."""
         if Image is None:
             return None
-        want = "air" if self.air_now else EMO_ART.get(self.emotion, self.emotion)
+        want = ("burst" if self.burst_hide()
+                else "air" if self.air_now else EMO_ART.get(self.emotion, self.emotion))
         if want in self.emotion_sources:
             return want
         if FALLBACK_TO_NEUTRAL and "neutral" in self.emotion_sources:
@@ -2723,6 +2895,13 @@ class Nova:
         self.phone_photo = ImageTk.PhotoImage(background)
         self.phone_photo_key = key
         return self.phone_photo
+
+    def head_off(self):
+        """Kopfregler: verschiebt nur die Deckenkante (Kopfposition) in px."""
+        try:
+            return self.figure_h() * float(self.s.get("head_pct", 0)) / 100.0
+        except (TypeError, ValueError):
+            return 0.0
 
     def figure_h(self):
         key = self.art_key()
@@ -3024,9 +3203,11 @@ class Nova:
                 {"label": "System", "icon": "🖥️", "action": go("system")},
                 {"label": "Steuerung", "icon": "🎛️", "action": go("control")},
                 {"label": "Laufen", "icon": "🚶", "action": self.toggle_walk,
-                 "on": self.walking},
+                 "on": self.walking and not self.burst_mode},
                 {"label": "Physik", "icon": "🏀", "action": self.toggle_physics,
                  "on": self.physics_enabled},
+                {"label": "Platzen", "icon": "💥", "action": self.toggle_burst,
+                 "on": self.burst_mode},
                 {"label": "Größe &\nFüße", "icon": "📏", "action": self.open_size_settings},
                 {"label": "Name", "icon": "✏️", "action": self.start_name_prompt},
                 {"label": "Emotionen", "icon": "🎭", "action": self.open_emotion_settings},
@@ -4754,6 +4935,8 @@ class Nova:
 
     def speak_text(self, text):
         """Übergibt Text an Katja; der Worker spricht Texte nacheinander."""
+        if self.burst_hide():
+            return
         if not IS_WIN:
             self.voice_error_message = "Die Sprachausgabe funktioniert nur unter Windows."
             return
@@ -7627,6 +7810,8 @@ class Nova:
             if not kick or now - getattr(self, "_acc_kick_t", 0.0) < 0.35:
                 return                             # läuft schon / Kick nicht jeden Frame
             self._acc_kick_t = now
+            for pc in self.__dict__.get("_pieces", {}).values():
+                pc.launch(pc.vx + random.uniform(-250, 250), -kick * random.uniform(1.0, 2.0))
             for o in old.values():                 # Aufprall: Teile hüpfen nochmal hoch
                 o[3] -= kick * random.uniform(0.6, 1.2)
                 o[2] += random.uniform(-80, 80)
@@ -7635,7 +7820,79 @@ class Nova:
                         for k in self.s["worn"]}
         self.acc_phase, self._acc_t = "falling", time.time()
 
+    # ---- Cosmetics als eigene Mini-Fenster ----
+    def _swarm_fx(self, c, marks):
+        """Hook in _acc_fx: erzeugt die Mini-Fenster und blendet die Teile im Hauptfenster aus."""
+        if getattr(self, "_swarm_off", False):
+            return False
+        P = self.__dict__.setdefault("_pieces", {})
+        all_ids = c.find_withtag("acc")
+        for n, (key, mid) in enumerate(marks):
+            end = marks[n + 1][1] if n + 1 < len(marks) else 1 << 60
+            ids = [t for t in all_ids if mid < t < end]
+            if not ids:
+                continue
+            if key in P:
+                if self.acc_phase == "falling" and P[key].mode != "fall":
+                    P[key].launch(random.uniform(-500, 500), random.uniform(-700, -300))
+            elif self.acc_phase == "falling" and len(P) < 24:
+                try:
+                    o = self.acc_off.get(key) or [0, 0, 0, -150]
+                    pc = CosmeticPiece(self, c, ids, key)
+                    pc.launch(self.vx * 0.7 + o[2] * 3 + random.uniform(-500, 500),
+                              self.vy * 0.5 + o[3] * 3 - random.uniform(0, 300))
+                    P[key] = pc
+                except Exception:
+                    self._swarm_off = bool(not P)
+                    continue
+            if key in P:
+                for t in ids:
+                    c.itemconfigure(t, state="hidden")
+        if not P:
+            return False
+        if self.acc_phase == "worn":                    # Sicherheitsnetz
+            self.swarm_clear()
+            return False
+        return True
+
+    def swarm_clear(self):
+        self._swarm_t0 = None
+        for pc in self.__dict__.get("_pieces", {}).values():
+            pc.destroy()
+        self._pieces = {}
+
+    def swarm_update(self, now, dt):
+        P = self.__dict__.get("_pieces")
+        if not P:
+            return
+        if self.phone_mode or not self.s["worn"]:
+            self.swarm_clear()
+            self.acc_phase, self.acc_off = "worn", {}
+            return
+        dt = clamp(dt, 0.0, 0.05)
+        self._swarm_budget = 2                      # max. 2 neue Fenster pro Frame
+        vb = self.virtual_bounds()
+        for key in [k for k in P if k not in self.s["worn"]]:
+            P.pop(key).destroy()
+        for pc in P.values():
+            pc.step(self, now, dt, vb)
+        if self.acc_phase == "falling":
+            if getattr(self, "_swarm_t0", None) is None:
+                self._swarm_t0 = now
+            calm = all(pc.rest_since and now - pc.rest_since > 1.0 for pc in P.values())
+            if (calm or now - self._swarm_t0 > 12) and not (
+                    self.phys_active or self.dragging or self.fly_active()):
+                self.acc_phase = "returning"
+                self._swarm_t0 = None
+                for pc in P.values():
+                    pc.begin_return(now)
+        elif self.acc_phase == "returning" and all(pc.mode == "done" for pc in P.values()):
+            self.swarm_clear()
+            self.acc_phase, self.acc_off = "worn", {}
+
     def _acc_fx(self, c, marks):
+        if self._swarm_fx(c, marks):
+            return
         now = time.time()
         dt = min(0.05, max(0.0, now - self._acc_t))
         self._acc_t = now
@@ -7754,6 +8011,8 @@ class Nova:
     def say(self, text, seconds=5, speak=True, ai_context=None):
         """Zeigt Text. Nur Idle-/Streichel-Sprüche werden durch KI-Zeilen ersetzt, beim Füttern
         wird die KI-Zeile ergänzt. Ergebnisse, Level-ups, Abschied usw. bleiben Originaltext."""
+        if self.burst_hide():
+            return
         if self.ai_radial_action_active:
             self.ai_radial_action_has_message = True
         use_ai = (ai_context is not None and speak and self._uses_ai_speech()
@@ -7788,6 +8047,8 @@ class Nova:
 
     # ================= Maus =================
     def on_press(self, e):
+        if self.burst_hide():                      # zerplatzt: kurz nicht anfassbar
+            return
         if self.fly_on:
             e = _Pt(e.x - self.fly_origin[0], e.y - self.fly_origin[1])
         if getattr(self, "acc_edit", False):
@@ -8013,6 +8274,14 @@ class Nova:
         self.drag_moved = False
         self.drag_start = (self.x, self.y)
 
+    def at_edge(self):
+        """True, wenn NOVA am Bildschirmrand, an der Decke oder am Boden (oder darüber hinaus) ist."""
+        vl, vt, vr, vb = self.virtual_bounds()
+        lo, hi = vl - PHYS_WALL_MARGIN, vr - W + PHYS_WALL_MARGIN
+        vt -= max(0, H - 5 - self.figure_h()) + self.head_off()
+        return (self.x <= lo + 8 or self.x >= hi - 8 or self.y <= vt + 8
+                or self.y >= self.floor_y() - 8)
+
     def throw_velocity(self):
         """Wurfgeschwindigkeit (Pixel/s) aus den letzten ~0,1 s der Mausbewegung."""
         samples = self.drag_samples
@@ -8046,8 +8315,18 @@ class Nova:
                 self.start_physics(0.0, 0.0)   # mitten im Flug gefangen: weiterfallen
             return
         vx, vy = self.throw_velocity()
+        edge = self.at_edge()
+        sm = self.drag_samples
+        if edge and math.hypot(vx, vy) < 150 and len(sm) >= 2 and sm[-1][0] - sm[0][0] >= 0.015:
+            span = sm[-1][0] - sm[0][0]        # Maus am Rand festgeklemmt: Wurf ohne Altersprüfung
+            vx, vy = (sm[-1][1] - sm[0][1]) / span, (sm[-1][2] - sm[0][2]) / span
+            sp = math.hypot(vx, vy)
+            if sp > PHYS_MAX_THROW:
+                vx, vy = vx * PHYS_MAX_THROW / sp, vy * PHYS_MAX_THROW / sp
         if math.hypot(vx, vy) < 150:           # nur verschoben, kein Wurf: in der Luft stehen lassen
-            if not self.try_drop_on_window():
+            if edge:                           # nie an Rand/Decke/Boden hängen bleiben
+                self.start_physics(vx, vy)
+            elif not self.try_drop_on_window():
                 self.air_hold = True
             return
         self.start_physics(vx, vy)
@@ -8345,6 +8624,7 @@ class Nova:
         vl, vt, vr, vb = self.virtual_bounds()
         lo, hi = vl - PHYS_WALL_MARGIN, vr - W + PHYS_WALL_MARGIN
         floor = self.floor_y()
+        vt -= max(0, H - 5 - self.music_offset() - self.figure_h())   # Decke = Kopf, nicht Fensterrand
         hit = 0.0
         if self.x < lo:
             hit = abs(self.vx)
@@ -8388,6 +8668,18 @@ class Nova:
         self.sfx_files[kind] = path
         return path
 
+    def sfx_prewarm(self):
+        """Erzeugt alle Effekt-WAVs im Hintergrund; sonst blockiert die erste Synthese den Aufprall."""
+        if not IS_WIN or winsound is None:
+            return
+        try:
+            self.sfx_dir = tempfile.mkdtemp(prefix="nova_sfx_")
+            atexit.register(self.sfx_cleanup)
+        except OSError:
+            return
+        threading.Thread(target=lambda: [self.sfx_file(k) for k in SFX_KINDS],
+                         daemon=True, name="nova-sfx-prewarm").start()
+
     def sfx_cleanup(self):
         if winsound is not None:
             try:
@@ -8398,12 +8690,12 @@ class Nova:
             shutil.rmtree(self.sfx_dir, ignore_errors=True)
             self.sfx_dir, self.sfx_files = None, {}
 
-    def sfx_play(self, kind, now=None):
+    def sfx_play(self, kind, now=None, force=False):
         """Spielt einen kurzen, leisen Effekt. Begrenzt, damit es nie nervt."""
         if not self.sfx_enabled or self.phone_mode or self.quitting:
             return False
         now = time.monotonic() if now is None else now
-        if (now - self.sfx_last < SFX_MIN_GAP
+        if not force and (now - self.sfx_last < SFX_MIN_GAP
                 or now - self.sfx_last_kind.get(kind, -99.0) < SFX_KIND_GAP):
             return False
         path = self.sfx_file(kind)
@@ -8428,7 +8720,123 @@ class Nova:
         if speed > 200:
             self.bump_until = time.time() + 0.35
 
-    def sfx_wall(self, speed):
+    def toggle_burst(self):
+        self.burst_mode = not self.burst_mode
+        self.s["burst_mode"] = self.burst_mode
+        self.burst_until = 0.0
+        self.save()
+        self.say("Platzen an: Wirf mich nicht zu hart!" if self.burst_mode
+                 else "Platzen aus.", 4, speak=False)
+
+    def burst_shards(self, key, push):
+        """Schneidet das aktuelle Bild in Stücke (Raster); jedes fliegt vom Körpermittelpunkt weg."""
+        base = self.art_base(key, self.current_height())
+        img = base[0] if self.dir >= 0 else base[1]
+        w, h = img.size
+        out = []
+        R, C = 9, 7
+        for r in range(R):
+            for c in range(C):
+                box = (c * w // C, r * h // R, (c + 1) * w // C, (r + 1) * h // R)
+                piece = img.crop(box)
+                alpha = piece.getchannel("A").point(lambda v: 255 if v > 140 else 0)
+                if not alpha.getbbox():
+                    continue
+                flat = Image.new("RGB", piece.size, (1, 2, 3))
+                flat.paste(piece.convert("RGB"), (0, 0), alpha)
+                ox, oy = box[0] - w / 2, box[1] - h
+                dx, dy = ox + piece.width / 2, oy + piece.height / 2 + h / 2
+                d = math.hypot(dx, dy) or 1.0
+                sp = random.uniform(350, 950)
+                out.append([ImageTk.PhotoImage(flat), ox, oy,
+                            dx / d * sp + push[0] * 0.6 + random.uniform(-80, 80),
+                            dy / d * sp + push[1] * 0.6 - random.uniform(80, 320),
+                            piece.height])
+        return out
+
+    def start_burst(self, side):
+        """Zerspringt in Stücke; pixeliges Blut bleibt an der Aufprallstelle (NOVA steht still)."""
+        now, h = time.time(), self.figure_h()
+        self.burst_until, self.burst_t0 = now + BURST_SECONDS, now
+        self.stop_voice()                              # Sprachausgabe sofort beenden (Aufprall)
+        self.sfx_play("burst", force=True)             # Knall + Spritzen, ignoriert den Mindestabstand
+        self.bubble_text, self.bubble_until = "", 0.0  # Sprechblase sofort weg
+        push = {"l": (260, 0), "r": (-260, 0), "t": (0, 260), "b": (0, -200)}[side]
+        key = self.art_key()
+        try:
+            self.burst_shards_list = self.burst_shards(key, push) if key else []
+        except Exception:
+            self.burst_shards_list = []
+        self.burst_until, self.burst_t0, self.burst_side = now + BURST_SECONDS, now, side
+        self.burst_last = now
+        self.burst_x0, self.burst_y0 = self.x, self.y
+        wx = W / 2 - PHYS_WALL_MARGIN - BURST_STICK - 40               # 40 px innerhalb des sichtbaren Bildschirmrands
+        self.burst_org = ({"l": -wx, "r": wx}.get(side, 0.0),
+                          -0.9 * h if side == "t" else -0.5 * h)
+        cols = (ACCENT, ACCENT, "#241012", "#2e1215", LIGHT, "#8a0010")
+        self.burst_parts = [
+            (random.uniform(-0.25, 0.25) * h, random.uniform(-0.45, 0.45) * h,
+             push[0] + random.uniform(-260, 260), push[1] + random.uniform(-300, 200),
+             random.choice((4, 6, 8, 10)), random.choice(cols)) for _ in range(30)]
+        bx = {"l": -wx, "r": wx}.get(side, 0.0)
+        by = -0.9 * h if side == "t" else -0.5 * h
+        snap = lambda v: int(v // 6) * 6
+        self.burst_blood = [
+            (snap(bx + random.gauss(0, 20)), snap(by + random.gauss(0, 30)), random.choice((6, 6, 12)),
+             random.choice(("#b0001a", "#d4122f", "#ff1a38", "#7a0010")),
+             random.choice((0, 0, random.randint(20, 90)))) for _ in range(140)]
+
+    def burst_hide(self):
+        now = time.time()
+        return self.burst_mode and now < self.burst_until and now - self.burst_t0 < BURST_HIDE
+
+    def draw_burst(self, now, base):
+        if not self.burst_mode or now >= self.burst_until or self.phone_mode:
+            return
+        c, cx = self.canvas, W // 2
+        t, cy = now - self.burst_t0, base - self.figure_h() / 2
+        if t < 2.4:
+            if self.burst_shards_list:
+                dt = clamp(now - getattr(self, "burst_last", now), 0.0, 0.05)
+                self.burst_last = now
+                blink = t > 1.9
+                for p in self.burst_shards_list:
+                    p[3] *= 0.992
+                    p[4] += 1500 * dt
+                    p[1] += p[3] * dt
+                    p[2] += p[4] * dt
+                    if p[2] + p[5] > 0:                      # Boden: abprallen
+                        p[2], p[4], p[3] = -p[5], -p[4] * 0.45, p[3] * 0.8
+                    p[1] = clamp(p[1], -W / 2, W / 2 - 20)
+                    if blink and int(now * 20) % 2:
+                        continue
+                    c.create_image(cx + p[1], base + p[2], image=p[0], anchor="nw")
+            else:
+                for ox, oy, vx, vy, sz, col in self.burst_parts:
+                    x, y = cx + ox + vx * t, cy + oy + vy * t + 500 * t * t
+                    c.create_rectangle(x, y, x + sz, y + sz, fill=col, outline="")
+        if t < 0.3:                                          # Schockwelle + Blitz am Aufprall
+            ox, oy = self.burst_org
+            x, y, k = cx + ox, cy + oy, t / 0.3
+            r = 12 + k * self.figure_h() * 0.7
+            c.create_oval(x - r, y - r, x + r, y + r, outline="#ffffff" if k < 0.5 else ACCENT,
+                          width=max(1, int(5 * (1 - k))))
+            for i in range(10):
+                a, r2 = i * math.pi / 5 + 0.3, r * 1.5 * (0.6 + 0.4 * ((i * 7) % 3) / 2)
+                c.create_line(x + math.cos(a) * r * 0.5, y + math.sin(a) * r * 0.5,
+                              x + math.cos(a) * r2, y + math.sin(a) * r2, fill=LIGHT, width=2)
+        fade = (self.burst_until - now) / 0.8
+        for ox, oy, sz, col, drip in self.burst_blood:
+            if fade < 1 and random.random() > fade:
+                continue
+            x = cx + ox + self.burst_x0 - self.x
+            y = cy + oy + self.burst_y0 - self.y
+            c.create_rectangle(x, y, x + sz, y + sz + drip * min(1.0, t / 1.2), fill=col,
+                               outline="#1a0004", width=1)
+
+    def sfx_wall(self, speed, side="l"):
+        if self.burst_mode and speed >= BURST_SPEED and not self.music_visible():
+            self.burst_hit = side                      # platzt sofort an der Wand (update_physics)
         if speed > 250:
             self.acc_begin_fall(min(520, speed * 0.4))
         self.bump_fx(speed)
@@ -8486,6 +8894,29 @@ class Nova:
         """Schwerkraft, Abprallen an Wänden/Decke/Boden und Landung auf Fenstern."""
         if self.dragging or not self.physics_enabled or self.phone_mode:
             self.phys_active = False
+            self.burst_until = 0.0
+            self.burst_pending = self.burst_frozen = False
+            self.burst_hit = self.burst_ret = None
+            return
+        ret = getattr(self, "burst_ret", None)
+        if ret:                                        # Rückweg nach dem Platzen: wie bei den Cosmetics
+            t0, x0, x1 = ret
+            p = min(1.0, (now - t0) / BURST_RETURN)
+            self.vx = self.vy = self.spin = 0.0
+            self.x = x1 + (x0 - x1) * (1 - p) ** 3 + random.randint(-7, 7) * (1 - p) * 1.5
+            if p >= 1.0:
+                self.x, self.burst_ret, self.phys_active = x1, None, True
+            return
+        if getattr(self, "burst_frozen", False):       # Burst an der Wand: stehen bleiben, dann weg-teleportieren
+            self.vx = self.vy = self.spin = 0.0
+            if now - self.burst_t0 >= BURST_HIDE:
+                self.burst_frozen = False
+                vl, vt, vr, vb = self.virtual_bounds()
+                lo, hi = vl - PHYS_WALL_MARGIN, vr - W + PHYS_WALL_MARGIN
+                away = random.uniform(300, 600)
+                x1 = clamp(self.x + (away if self.x - lo < hi - self.x else -away), lo, hi)
+                self.angle = 0.0
+                self.burst_ret = (now, self.x, x1)     # Rückweg mit Cosmetics-Glitch, danach normal fallen
             return
         if self.game_end:
             self.vx = self.vy = 0.0            # Minispiel läuft: einfrieren, danach weiterfallen
@@ -8510,18 +8941,33 @@ class Nova:
         vl, vt, vr, vb = self.virtual_bounds()       # Wände = Außenkanten aller Bildschirme
         lo, hi = vl - PHYS_WALL_MARGIN, vr - W + PHYS_WALL_MARGIN
         if self.x < lo:
-            self.sfx_wall(abs(self.vx))
+            self.sfx_wall(abs(self.vx), "l")
             self.x, self.vx = lo, abs(self.vx) * PHYS_WALL_BOUNCE
             self.spin = -self.spin * 0.7
         elif self.x > hi:
-            self.sfx_wall(abs(self.vx))
+            self.sfx_wall(abs(self.vx), "r")
             self.x, self.vx = hi, -abs(self.vx) * PHYS_WALL_BOUNCE
             self.spin = -self.spin * 0.7
-        vt -= max(0, H - 5 - self.figure_h())      # Decke = Kopf des Sprites, nicht der leere Fensterrand
+        vt -= max(0, H - 5 - self.figure_h()) + self.head_off()      # Decke = Kopf des Sprites, nicht der leere Fensterrand
         if self.y < vt:
-            self.sfx_wall(abs(self.vy))
+            self.sfx_wall(abs(self.vy), "t")
             self.y, self.vy = float(vt), abs(self.vy) * PHYS_WALL_BOUNCE
             self.spin = -self.spin * 0.7
+        hit = getattr(self, "burst_hit", None)
+        if hit:
+            self.burst_hit = None
+            if self.burst_mode:
+                if hit == "l":                         # ein Stück in die Wand hinein
+                    self.x -= BURST_STICK
+                elif hit == "r":
+                    self.x += BURST_STICK
+                elif hit == "t":
+                    self.y -= BURST_STICK
+                self.start_burst(hit)                  # sofort Explosion + Blut an der Wand
+                self.burst_frozen = True
+                self.vx = self.vy = self.spin = 0.0
+                self.sfx_impact(1400.0)
+                return
         if self.vy > 0 and self.try_land_on_window(feet_old, self.y + H - 5 - drop, now):
             return
         floor = self.floor_y()
@@ -8529,6 +8975,13 @@ class Nova:
             impact = self.vy
             self.y = floor
             self.phys_decided = {}             # nach einem Aufprall gibt es neue Chancen auf Fenster
+            if getattr(self, "burst_pending", False) and self.burst_mode:
+                self.burst_pending = False
+                self.start_burst("b")                      # Boden erreicht: jetzt platzen, immer
+                self.vx = self.vy = self.spin = 0.0
+                self.phys_active = False
+                self.sfx_impact(max(impact, 1400.0))
+                return
             if impact > PHYS_REST_SPEED:
                 self.sfx_impact(impact)
                 self.vy = -impact * PHYS_FLOOR_BOUNCE
@@ -8617,7 +9070,7 @@ class Nova:
                                  and not self.music_visible() and self.y < self.air_floor() - 8)
 
     def moving(self):
-        return (self.walking and not self.dragging and not self.sleeping and not self.mini
+        return (self.walking and not self.burst_mode and not self.dragging and not self.sleeping and not self.mini
                 and not self.system_dozing and time.time() >= self.cursor_pause_until
                 and not self.phone_mode and self.radial_window is None and not self.quitting
                 and not (self.game_end and self.game_mode == "jump")
@@ -9408,6 +9861,7 @@ class Nova:
               and not jump_game and not static_game and not self.ice_hold()):
                 self.follow_platform()
         self.update_rotation(dt)
+        self.swarm_update(now, dt)
         if menu_open:
             self.follow_radial()
 
@@ -9454,12 +9908,30 @@ class Nova:
         top = base - self.figure_h()
 
         self.canvas.delete("all")
-        self.draw_character(top, base)
+        hidden = self.burst_hide()
+        ret = getattr(self, "burst_ret", None)
+        rp = min(1.0, (now - ret[0]) / BURST_RETURN) if ret else 1.0
+        flick = bool(ret) and random.random() < 0.35 * (1 - rp * 0.6)
+        if not hidden and not flick:
+            self.draw_character(top, base)
         self.draw_air_glitch(base)
         self.draw_bump_glitch(now, W // 2, base, self.figure_h())
+        self.draw_burst(now, base)
+        if hidden:                                 # zerplatzt: Blase, HUD, Chips usw. komplett aus
+            self.draw_glitch_effect(now)
+            self._set_geometry(self.display_width(), self.display_height())
+            self._schedule_tick()
+            return
         self.draw_music_box(now)
         self.draw_glitch_effect(now)
-        self.draw_accessories(top)
+        if not flick:
+            self.draw_accessories(top)             # Cosmetics erst wieder, wenn das normale Bild da ist
+        if ret:                                    # gleiche Glitch-Streifen wie bei den Cosmetics
+            for _ in range(3):
+                gy = random.uniform(top, base)
+                self.canvas.create_rectangle(W // 2 - 45 - random.randint(0, 10), gy,
+                                             W // 2 + 45 + random.randint(0, 10), gy + random.randint(1, 3),
+                                             fill=random.choice((ACCENT, LIGHT)), outline="")
         self.draw_ai_orb(top)
         self.draw_status_marks(top)
         if (self.hover or now < self.hud_until) and not self.mini and not self.naming and not self.prompt:
