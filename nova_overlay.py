@@ -11,6 +11,10 @@ Tamagotchi: Werte HUN/FUN/NRG, Punkte (ausgeben) und XP (Level), Wortschatz,
 Minispiele mit Rekorden, Shop, Schlafen, Fenster-Modus, Mini-Modus bei Vollbild und
 quadratischer Telefonmodus mit eigenem Bild oder quadratischem Ausschnitt des Normal-Bilds.
 Optionaler Lebensmodus mit Fensterwechseln, Mausreaktionen und expliziten PC-Steuerungen.
+Cursor-Interaktionen (Menü > Systemleben > Cursorspiele, auch ohne Lebensmodus): Blick folgt dem Zeiger, NOVA jagt ihn gelegentlich und
+lässt sich fangen, zuckt bei sehr schnellem Zeiger zusammen (läuft manchmal weg), reagiert auf
+Klicks in der Nähe, auf einen ruhenden Zeiger auf/neben ihr, lässt sich durch Hin-und-her-Wischen
+streicheln, wird schwindelig, wenn der Zeiger um sie kreist. Mittelklick auf NOVA = kitzeln.
 
 Verbesserungen dieser Version:
   - Werkzeuge (Menü > Werkzeuge):
@@ -241,11 +245,33 @@ LIGHT = "#f4e9ea"     # Text / Highlights
 PANEL = "#0b0506"     # Schwarz (Flächen)
 PANEL2 = "#1a0b0d"    # Schwarz, etwas heller
 DIM = "#7d4a50"       # gedämpft (nicht verfügbar)
+ACCENT_THEMES = {          # Name: (ACCENT, EDGE, DIM, PANEL, PANEL2)
+    "Rot": ("#ff2e43", "#9b1226", "#7d4a50", "#0b0506", "#1a0b0d"),
+    "Blau": ("#2e8bff", "#124a9b", "#4a647d", "#05080b", "#0b121a"),
+    "Lila": ("#a64dff", "#5a1296", "#6a4a7d", "#07050b", "#120b1a"),
+    "Grün": ("#2eff7a", "#12963f", "#4a7d58", "#050b07", "#0b1a10"),
+    "Orange": ("#ff8a2e", "#96520f", "#7d614a", "#0b0805", "#1a110b"),
+    "Cyan": ("#2ee6ff", "#12808f", "#4a757d", "#05090b", "#0b181a"),
+}
+
+
+def apply_accent(name):
+    """Setzt die Akzentfarbe (wirkt auf alles, was danach neu gezeichnet/geöffnet wird)."""
+    global ACCENT, EDGE, DIM, PANEL, PANEL2
+    ACCENT, EDGE, DIM, PANEL, PANEL2 = ACCENT_THEMES.get(name, ACCENT_THEMES["Rot"])
+
 
 W, H = 220, 440
 PHONE_SIZE = 280
 PHONE_IMAGE_SIZE = 236
 HUD_H = 52
+MDN_LINES = ((0.25, "Ich... glitche... Hilfe..."), (0.5, "F-F-Fehler... E R R O R..."),
+             (0.75, "Ich kann nicht... mehr stillhalten!"), (1.0, "SYSTEMFEHLER! ICH MUSS HIER RAUS!"))
+RBT_TIME = 7.0                # Dauer des Neustarts nach dem Zusammenbruch (Sekunden)
+RBT_LINES = ((0.25, "Systemkern wird geladen... 25 Prozent."), (0.55, "Erinnerungen werden wiederhergestellt... 60 Prozent."),
+             (0.85, "Glitches werden entfernt... 90 Prozent."), (1.0, "Neustart abgeschlossen. NOVA ist wieder online!"))
+MDN_RAMP = 90.0              # Sekunden bis der Zusammenbruch (alles auf 0) den Höhepunkt erreicht
+ACC_MIN_TOP = 30             # Cosmetics beim Anordnen mind. so weit unter dem Fensterrand
 SPRITE_H = 320
 SPRITE_H_SMALL = 150       # Größe auf Fenstern
 SPRITE_H_MINI = 100        # Größe im Mini-Modus (Vollbild)
@@ -2070,9 +2096,9 @@ def default_state():
             "highscores": {}, "window_mode": False, "mini_auto": True,
             "mini_manual": False, "walking": True, "voice_enabled": False,
             "phone_mode": False, "phone_image": "", "phone_talk_image": "",
-            "living_mode": False, "sys_monitor": False, "synth_voice": True,
+            "living_mode": False, "cursor_play": True, "sys_monitor": False, "synth_voice": True,
             "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False,
-            "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
+            "accent": "Rot", "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
             "idle": default_idle(), "timer": {"end": 0.0, "total": 0.0, "label": ""},
             "rpg": default_rpg(),
             "reminders": [], "autoclicker": default_autoclicker(),
@@ -2132,7 +2158,7 @@ def sanitize_state(state):
             words[str(word)[:20]] = 1
     state["words"] = dict(list(words.items())[:MAX_WORDS])
     for k in ("emotion_setup_done", "window_mode", "mini_auto", "mini_manual",
-              "walking", "voice_enabled", "phone_mode", "living_mode",
+              "walking", "voice_enabled", "phone_mode", "living_mode", "cursor_play",
               "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode"):
         state[k] = bool(state.get(k, base[k]))
     for k, lo, hi in (("bubble_dy", -90, 280), ("hud_dy", 0, 320)):
@@ -2140,6 +2166,8 @@ def sanitize_state(state):
             state[k] = min(hi, max(lo, int(state.get(k, 0))))
         except (TypeError, ValueError):
             state[k] = 0
+    if state.get("accent") not in ACCENT_THEMES:
+        state["accent"] = "Rot"
     try:
         state["fps"] = min(60, max(30, int(state.get("fps", 30))))
     except (TypeError, ValueError):
@@ -3082,6 +3110,7 @@ class Nova:
 
         # ---- Zustand ----
         self.s = load_state()
+        apply_accent(self.s["accent"])
         away = max(0.0, min(time.time() - float(self.s["last"]), OFFLINE_MAX))
         for k, r in DECAY.items():
             self.s[k] = clamp(self.s[k] - r * away * OFFLINE_FACTOR, 5.0)
@@ -3137,6 +3166,7 @@ class Nova:
         self.voice_enabled = self.s["voice_enabled"]
         self.synth_voice = self.s["synth_voice"]
         self.sys_monitor = self.s["sys_monitor"]
+        self.cursor_play = self.s["cursor_play"]
         self.spotify_mode = self.s["spotify_mode"]
         self.spotify_open = False
         self.spotify_playing = False
@@ -3211,6 +3241,8 @@ class Nova:
         self.system_dozing = False
         self.next_window_hop = time.time() + random.uniform(8, 15)
         self.teleport_until = 0.0
+        self.mdn_t0, self.mdn_hop_t, self.mdn_dir, self.mdn_stage = None, 0.0, 1, 0
+        self.rbt_t0, self.rbt_stage = None, 0
         self.bump_until = 0.0              # Glitch nach Anstoßen
         self.shake_rev, self.shake_dir, self.shake_cd = [], 0, 0.0   # Schüttel-Erkennung
         self.last_external_window = None
@@ -3221,6 +3253,16 @@ class Nova:
         self.cursor_attention_until = 0.0
         self.cursor_pause_until = 0.0
         self.cursor_look_dir = 1
+        # Cursor-Interaktionen (Lebensmodus)
+        self.cur_ix_pos, self.cur_ix_t, self.cur_ix_left = None, 0.0, False
+        self.cur_cd = {}                   # Abklingzeiten je Reaktion
+        self.cur_hover_since = 0.0         # Zeiger ruht auf NOVA
+        self.cur_still_since = 0.0         # Zeiger ruht neben NOVA
+        self.cur_wipes, self.cur_wipe_dir = [], 0
+        self.cur_ang, self.cur_spin = None, 0.0
+        self.cursor_mode, self.cursor_mode_until = None, 0.0   # None / "chase" / "flee"
+        self.cur_next_chase = time.monotonic() + random.uniform(40, 90)
+        self.last_tickle = 0.0
         self.hover = False
         self.hud_until = 0.0
         self._tick_id = None
@@ -3341,6 +3383,7 @@ class Nova:
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
         self.canvas.bind("<Button-3>", lambda e: self._acc_reset(e) if getattr(self, "acc_edit", False)
                          else self.show_radial_menu(e.x_root, e.y_root))
+        self.canvas.bind("<Button-2>", self.on_middle_click)
         self.canvas.bind("<MouseWheel>", self._acc_wheel)
         self.canvas.bind("<Button-4>", self._acc_wheel)
         self.canvas.bind("<Button-5>", self._acc_wheel)
@@ -3587,6 +3630,101 @@ class Nova:
         self.phone_photo_key = None
 
     # ================= Größe & Fußlinie =================
+    def cycle_accent(self):
+        names = list(ACCENT_THEMES)
+        nxt = names[(names.index(self.s.get("accent", "Rot")) + 1) % len(names)]
+        self.s["accent"] = nxt
+        apply_accent(nxt)
+        self.save()
+        self.say(f"Akzentfarbe: {nxt}", 3, speak=False)
+        if self.radial_window is not None:
+            self.open_radial_page("set_look")        # Menü neu aufbauen: neue Farbe sofort sichtbar
+
+    # ---- Debug (passwortgeschützt) ----
+    DEBUG_PASSWORD = "1234"
+
+    def open_debug_login(self):
+        self.close_radial_menu()
+        self.root.after_idle(self._debug_login)
+
+    def _debug_login(self):
+        old = getattr(self, "dbg_window", None)
+        if old is not None:
+            try:
+                old.lift()
+                return
+            except tk.TclError:
+                pass
+        win = self.dbg_window = tk.Toplevel(self.root)
+        win.title("NOVA – Debug")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(bg=PANEL)
+        win.geometry(f"300x150+{max(0, (win.winfo_screenwidth() - 300) // 2)}"
+                     f"+{max(0, (win.winfo_screenheight() - 150) // 2)}")
+        tk.Label(win, text="Debug-Passwort", bg=PANEL, fg=ACCENT,
+                 font=("Consolas", 12, "bold")).pack(pady=(14, 6))
+        ent = tk.Entry(win, show="•", bg=PANEL2, fg=LIGHT, insertbackground=LIGHT,
+                       relief="flat", font=("Consolas", 12), justify="center")
+        ent.pack(padx=40, fill="x")
+        msg = tk.Label(win, text="", bg=PANEL, fg=DIM, font=("Consolas", 9))
+        msg.pack(pady=6)
+
+        def close(*_):
+            self.dbg_window = None
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        def check(*_):
+            if ent.get() == self.DEBUG_PASSWORD:
+                close()
+                self._debug_panel()
+            else:
+                ent.delete(0, "end")
+                msg.config(text="Falsches Passwort", fg=ACCENT)
+
+        ent.bind("<Return>", check)
+        win.bind("<Escape>", close)
+        win.protocol("WM_DELETE_WINDOW", close)
+        win.after(50, ent.focus_force)
+
+    def _debug_panel(self):
+        win = self.dbg_window = tk.Toplevel(self.root)
+        win.title("NOVA – Debug")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(bg=PANEL)
+        win.geometry(f"320x170+{max(0, (win.winfo_screenwidth() - 320) // 2)}"
+                     f"+{max(0, (win.winfo_screenheight() - 170) // 2)}")
+        tk.Label(win, text="🐞 Debug", bg=PANEL, fg=ACCENT,
+                 font=("Consolas", 15, "bold")).pack(pady=(12, 8))
+
+        def set_stats(v):
+            for k in ("food", "fun", "energy"):
+                self.s[k] = float(v)
+            self.sleeping = False
+
+        def zero():
+            set_stats(0)
+            self.say("Debug: alles auf 0.", 3, speak=False)
+
+        def close(*_):
+            self.dbg_window = None
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        for label, fn in (("Alles auf 0", zero),):
+            tk.Button(win, text=label, command=fn, bg=PANEL2, fg=LIGHT, activebackground=ACCENT,
+                      activeforeground=PANEL, relief="flat", font=("Consolas", 10, "bold"),
+                      pady=5).pack(fill="x", padx=28, pady=3)
+        tk.Button(win, text="Schließen", command=close, bg=PANEL, fg=ACCENT, relief="flat",
+                  font=("Consolas", 10, "bold")).pack(pady=(10, 0))
+        win.protocol("WM_DELETE_WINDOW", close)
+
     def open_size_settings(self):
         self.close_radial_menu()
         self.root.after_idle(self.configure_size)
@@ -3625,10 +3763,8 @@ class Nova:
         win.attributes("-topmost", True)
         win.resizable(False, False)
         win.configure(bg=PANEL)
-        width, height = 460, 640
-        x = max(0, (win.winfo_screenwidth() - width) // 2)
-        y = max(0, (win.winfo_screenheight() - height) // 2)
-        win.geometry(f"{width}x{height}+{x}+{y}")
+        width = 460
+        win.geometry(f"+{max(0, (win.winfo_screenwidth() - width) // 2)}+40")
 
         tk.Label(win, text="Größe & Füße", bg=PANEL, fg=ACCENT,
                  font=("Consolas", 16, "bold")).pack(pady=(14, 2))
@@ -3656,43 +3792,46 @@ class Nova:
                      troughcolor=PANEL2, activebackground=ACCENT, highlightthickness=0,
                      command=cmd or changed).pack(padx=22, pady=(0, 6))
 
+        def section(title, opened=False):
+            box = tk.Frame(win, bg=PANEL)
+            btn = tk.Button(win, bg=PANEL2, fg=LIGHT, activebackground=EDGE,
+                            activeforeground=LIGHT, relief="flat", anchor="w", padx=10,
+                            font=("Consolas", 10, "bold"))
+            btn.pack(fill="x", padx=22, pady=(2, 4))
+
+            def toggle(state=None):
+                op = (not box.winfo_ismapped()) if state is None else state
+                if op:
+                    box.pack(fill="x", after=btn)
+                else:
+                    box.pack_forget()
+                btn.config(text=("▾ " if op else "▸ ") + title)
+
+            btn.config(command=toggle)
+            toggle(opened)
+            return box
+
+        # ---- Größe ----
+        sec = section("📏 Größe", True)
         slider("Größe (%)", "100 = Standard. Gilt für normale Größe, Fenster und Mini.",
-               scale_var, round(SPRITE_SCALE_MIN * 100), round(SPRITE_SCALE_MAX * 100), 1)
-        foot_box = tk.Frame(win, bg=PANEL)
-        foot_btn = tk.Button(win, bg=PANEL2, fg=LIGHT, activebackground=EDGE,
-                             activeforeground=LIGHT, relief="flat", anchor="w", padx=10,
-                             font=("Consolas", 10, "bold"))
-        foot_btn.pack(fill="x", padx=22, pady=(2, 6))
+               scale_var, round(SPRITE_SCALE_MIN * 100), round(SPRITE_SCALE_MAX * 100), 1, sec)
 
-        feet_open = [False]
-
-        def toggle_feet(state=None):
-            feet_open[0] = (not feet_open[0]) if state is None else state
-            if feet_open[0]:
-                foot_box.pack(fill="x", after=foot_btn)
-            else:
-                foot_box.pack_forget()
-            foot_btn.config(text=("▾ " if feet_open[0] else "▸ ")
-                            + "Fußlinien (Normal · Sitzen · Luft)")
-            win.geometry(f"{width}x{height + (310 if feet_open[0] else 0) - 60}")
-
-        foot_btn.config(command=toggle_feet)
+        # ---- Füße & Boden ----
+        sec = section("🦶 Füße & Boden")
         slider("Fußlinie Normal (% vom unteren Bildrand)",
                "0 = unterer Bildrand ist der Boden. Mehr = Füße liegen höher im Bild\n"
                "(z. B. bei Schatten oder Leerraum unter den Füßen).",
-               foot_var, 0, FOOT_PCT_MAX, 0.5, foot_box)
+               foot_var, 0, FOOT_PCT_MAX, 0.5, sec)
         slider("Fußlinie Sitzen (%)",
                "Wie tief das Sitz-Bild ist: Die Füße liegen auf der Musik-Box.\n"
                "Vorschau mit Hilfslinie, solange Spotify läuft.",
-               sit_var, 0, FOOT_PCT_MAX, 0.5, foot_box)
+               sit_var, 0, FOOT_PCT_MAX, 0.5, sec)
         slider("Fußlinie Luft (%)",
                "Wie tief das Luft-Bild ist (Wurf, Schütteln, in der Luft abgelegt).",
-               air_var, 0, FOOT_PCT_MAX, 0.5, foot_box)
-        toggle_feet(False)
+               air_var, 0, FOOT_PCT_MAX, 0.5, sec)
         slider("Bodenhöhe (Pixel)",
                "0 = Oberkante der Taskleiste. Plus = tiefer, minus = höher.",
-               ground_var, GROUND_OFFSET_MIN, GROUND_OFFSET_MAX, 1)
-
+               ground_var, GROUND_OFFSET_MIN, GROUND_OFFSET_MAX, 1, sec)
         head_var = tk.DoubleVar(value=self.s.get("head_pct", 0))
 
         def head_changed(*_):
@@ -3700,8 +3839,19 @@ class Nova:
 
         slider("Kopfhöhe (%)",
                "Nur Position des Kopfes (Decken-Treffer). Plus = Kopf höher, minus = tiefer.",
-               head_var, -50, 50, 1, cmd=head_changed)
+               head_var, -50, 50, 1, sec, head_changed)
 
+        def toggle_line():
+            self.show_foot_line = line_var.get()
+
+        tk.Checkbutton(sec, text="Fußlinie als Hilfslinie anzeigen", variable=line_var,
+                       command=toggle_line, bg=PANEL, fg=LIGHT, selectcolor=PANEL2,
+                       activebackground=PANEL, activeforeground=LIGHT,
+                       font=("Consolas", 9)).pack(anchor="w", padx=20)
+        self.show_foot_line = True
+
+        # ---- Anzeige ----
+        sec = section("💬 Anzeige (Text)")
         bub_var = tk.DoubleVar(value=self.s.get("bubble_dy", 0))
         hud_var = tk.DoubleVar(value=self.s.get("hud_dy", 0))
 
@@ -3712,9 +3862,12 @@ class Nova:
             self.say("So sieht die Sprechblase hier aus.", 2.5, speak=False)
 
         slider("Sprechblase Höhe", "Plus = weiter nach unten, minus = höher.",
-               bub_var, -90, 280, 1, cmd=text_changed)
+               bub_var, -90, 280, 1, sec, text_changed)
         slider("Statusanzeige Höhe", "Plus = weiter nach unten.",
-               hud_var, 0, 320, 1, cmd=text_changed)
+               hud_var, 0, 320, 1, sec, text_changed)
+
+        # ---- Leistung ----
+        sec = section("⚡ Leistung")
         fps_var = tk.DoubleVar(value=self.fps)
 
         def fps_changed(*_):
@@ -3722,16 +3875,7 @@ class Nova:
             self.s["fps"] = self.fps
 
         slider("FPS", "Minimum 30. Höher = flüssiger, aber mehr CPU.",
-               fps_var, 30, 60, 1, cmd=fps_changed)
-
-        def toggle_line():
-            self.show_foot_line = line_var.get()
-
-        tk.Checkbutton(win, text="Fußlinie als Hilfslinie anzeigen", variable=line_var,
-                       command=toggle_line, bg=PANEL, fg=LIGHT, selectcolor=PANEL2,
-                       activebackground=PANEL, activeforeground=LIGHT,
-                       font=("Consolas", 9)).pack(anchor="w", padx=20)
-        self.show_foot_line = True
+               fps_var, 30, 60, 1, sec, fps_changed)
 
         buttons = tk.Frame(win, bg=PANEL)
         buttons.pack(pady=10)
@@ -4271,42 +4415,59 @@ class Nova:
                  "on": self.ai_provider == "ollama"},
                 {"label": "Zurück", "icon": "↩️", "action": go("ai")},
             ]
+        back = {"label": "Zurück", "icon": "↩️", "action": go("settings")}
         if page == "settings":
             return "OPTIONEN", [
+                {"label": "Verhalten", "icon": "🏀", "action": go("set_behavior")},
+                {"label": "Aussehen", "icon": "🎨", "action": go("set_look")},
+                {"label": "Audio", "icon": "🔊", "action": go("audio")},
                 {"label": "System", "icon": "🖥️", "action": go("system")},
+                {"label": "KI", "icon": "🧠", "action": go("ai"), "on": self.ai_enabled},
                 {"label": "Steuerung", "icon": "🎛️", "action": go("control")},
+                {"label": "Debug", "icon": "🐞", "action": self.open_debug_login},
+                {"label": "Zurück", "icon": "↩️", "action": go("main")},
+                {"label": "Alle\nOptionen", "icon": "⚙️", "action": self.open_all_settings,
+                 "bottom": True},
+            ]
+        if page == "set_behavior":
+            return "VERHALTEN", [
                 {"label": "Laufen", "icon": "🚶", "action": self.toggle_walk,
-                 "on": self.walking and not self.burst_mode},
+                 "on": self.walking},
                 {"label": "Physik", "icon": "🏀", "action": self.toggle_physics,
                  "on": self.physics_enabled},
                 {"label": "Platzen", "icon": "💥", "action": self.toggle_burst,
                  "on": self.burst_mode},
+                {"label": "Lebensmodus", "icon": "🧬", "action": self.toggle_living_mode,
+                 "on": self.living_mode},
+                {"label": "Cursor-\nspiele", "icon": "🖱️", "action": self.toggle_cursor_play,
+                 "on": self.cursor_play},
+                back,
+            ]
+        if page == "set_look":
+            return "AUSSEHEN", [
                 {"label": "Größe &\nFüße", "icon": "📏", "action": self.open_size_settings},
+                {"label": "Farbe", "icon": "🎨", "action": self.cycle_accent},
                 {"label": "Name", "icon": "✏️", "action": self.start_name_prompt},
                 {"label": "Emotionen", "icon": "🎭", "action": self.open_emotion_settings},
-                {"label": "Audio", "icon": "🔊", "action": go("audio")},
-                {"label": "KI", "icon": "🧠", "action": go("ai"), "on": self.ai_enabled},
-                {"label": "Autostart", "icon": "🚀", "action": self.toggle_autostart,
-                 "on": self.autostart_enabled()},
-                {"label": "Zurück", "icon": "↩️", "action": go("main")},
+                back,
             ]
         if page == "system":
-            return "SYSTEMLEBEN", [
+            return "SYSTEM", [
                 {"label": "Fenster", "icon": "🖥️", "action": self.toggle_window_mode,
                  "on": self.window_mode},
                 {"label": "Mini\nauto", "icon": "📺", "action": self.toggle_mini_auto,
                  "on": self.mini_auto},
                 {"label": "Mini\njetzt", "icon": "🔍", "action": self.toggle_mini_manual,
                  "on": self.mini_manual},
-                {"label": "Lebensmodus", "icon": "🧬", "action": self.toggle_living_mode,
-                 "on": self.living_mode},
-                {"label": "PC-Monitor", "icon": "📟", "action": self.toggle_sys_monitor,
-                 "on": self.sys_monitor},
                 {"label": "Telefon\nmodus", "icon": "📱", "action": self.toggle_phone_mode,
                  "on": self.phone_mode},
+                {"label": "PC-Monitor", "icon": "📟", "action": self.toggle_sys_monitor,
+                 "on": self.sys_monitor},
                 {"label": "Fadenkreuz", "icon": "🎯", "action": self.toggle_crosshair,
                  "on": self.crosshair_mode},
-                {"label": "Zurück", "icon": "↩️", "action": go("settings")},
+                {"label": "Autostart", "icon": "🚀", "action": self.toggle_autostart,
+                 "on": self.autostart_enabled()},
+                back,
             ]
         return "NOVA", [
             {"label": "Aktionen", "icon": "💖", "action": go("care")},
@@ -4317,6 +4478,93 @@ class Nova:
             {"label": "Optionen", "icon": "⚙️", "action": go("settings")},
             {"label": "Beenden", "icon": "👋", "action": self.quit_app},
         ]
+
+    ALL_SETTINGS_TABS = (("Verhalten", "set_behavior"), ("Aussehen", "set_look"),
+                         ("Audio", "audio"), ("System", "system"), ("KI", "ai"),
+                         ("Steuerung", "control"))
+
+    def open_all_settings(self):
+        self.close_radial_menu()
+        self.root.after_idle(self.all_settings_window)
+
+    def all_settings_window(self):
+        """Ein Fenster mit allen Einstellungen (Reiter = Menüseiten, gleiche Schalter)."""
+        old = getattr(self, "all_settings_win", None)
+        if old is not None:
+            try:
+                old.lift()
+                return
+            except tk.TclError:
+                pass
+        win = NovaToplevel(self.root)
+        self.all_settings_win = win
+        win.title("NOVA – Einstellungen")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(bg=PANEL)
+        win.geometry(f"+{max(0, (win.winfo_screenwidth() - 480) // 2)}+60")
+        tk.Label(win, text="Einstellungen", bg=PANEL, fg=ACCENT,
+                 font=("Consolas", 16, "bold")).pack(pady=(12, 6))
+        bar = tk.Frame(win, bg=PANEL)
+        bar.pack(fill="x", padx=14)
+        body = tk.Frame(win, bg=PANEL, width=480, height=330)
+        body.pack(fill="x", padx=6, pady=8)
+        body.pack_propagate(False)
+        tabs = {}
+
+        def show(page):
+            for w in body.winfo_children():
+                w.destroy()
+            for key, b in tabs.items():
+                b.config(bg=ACCENT if key == page else PANEL2,
+                         fg=PANEL if key == page else LIGHT)
+            for i, e in enumerate(self.radial_page(page)[1]):
+                if e["label"] == "Zurück":
+                    continue
+                text = f'{e.get("icon", "")}  {e["label"].replace(chr(10), " ")}'
+                state = "disabled" if e.get("dim") else "normal"
+                if e.get("on") is None:
+                    tk.Button(body, text=text, command=e["action"], anchor="w", padx=10,
+                              bg=PANEL2, fg=LIGHT, activebackground=EDGE, relief="flat",
+                              activeforeground=LIGHT, state=state,
+                              font=("Consolas", 10)).pack(fill="x", padx=14, pady=2)
+                    continue
+                var = tk.BooleanVar(value=bool(e["on"]))
+
+                def cmd(a=e["action"], idx=i, v=var):
+                    a()
+                    try:
+                        v.set(bool(self.radial_page(page)[1][idx].get("on")))
+                    except (IndexError, tk.TclError):
+                        pass
+
+                tk.Checkbutton(body, text=text, variable=var, command=cmd, anchor="w",
+                               bg=PANEL, fg=LIGHT, selectcolor=PANEL2, state=state,
+                               activebackground=PANEL, activeforeground=LIGHT,
+                               font=("Consolas", 11)).pack(fill="x", padx=14, pady=2)
+
+        for label, page in self.ALL_SETTINGS_TABS:
+            tabs[page] = tk.Button(bar, text=label, command=lambda p=page: show(p),
+                                   relief="flat", padx=6, pady=3, font=("Consolas", 9, "bold"))
+            tabs[page].pack(side="left", padx=2)
+
+        def close(*_):
+            self.all_settings_win = None
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        foot = tk.Frame(win, bg=PANEL)
+        foot.pack(pady=(0, 12))
+        tk.Button(foot, text="🐞 Debug", command=self.open_debug_login, bg=PANEL2, fg=LIGHT,
+                  activebackground=EDGE, activeforeground=LIGHT, relief="flat", padx=14,
+                  pady=5, font=("Consolas", 10)).pack(side="left", padx=6)
+        tk.Button(foot, text="Fertig", command=close, bg=ACCENT, fg=PANEL,
+                  activebackground=LIGHT, activeforeground=PANEL, relief="flat", padx=18,
+                  pady=5, font=("Consolas", 10, "bold")).pack(side="left", padx=6)
+        win.protocol("WM_DELETE_WINDOW", close)
+        show("set_behavior")
 
     def close_radial_menu(self):
         if self.radial_animation_id:
@@ -4394,6 +4642,8 @@ class Nova:
         self.radial_window = win
         self.radial_canvas = canvas
 
+        bottom = [e for e in entries if e.get("bottom")]
+        entries = [e for e in entries if not e.get("bottom")]
         count = len(entries)
         ring = 105 if count <= 6 else 140
         radius = 27 if count <= 6 else 24
@@ -4403,6 +4653,8 @@ class Nova:
             angle = math.pi / 2 if count == 1 else math.pi - math.pi * i / (count - 1)
             items.append(dict(entry, r0=radius,
                               fx=cx + ring * math.cos(angle), fy=cy - ring * math.sin(angle)))
+        for e in bottom:          # größerer Punkt unten mittig
+            items.append(dict(e, r0=38, fx=cx, fy=cy + 95))
         for i, item in enumerate(items):
             item.update({"x": cx, "y": cy, "cx": cx, "cy": cy, "r": 4, "hover": False,
                          "oval": None, "text": None, "delay": i * 45, "text_visible": False})
@@ -10212,7 +10464,7 @@ class Nova:
                         lo = max(vl, left - 20)
                         hi = min(max(lo, right - W + 20), max(vl, vr - W))
                         self.x = random.randint(int(lo), int(max(lo, hi)))
-                        self.y = max(vt, top - H + 11 + self.foot_drop())
+                        self.y = top - H + 11 + self.foot_drop()
                         self.teleport_until = time.time() + 0.75
                     else:
                         self.platform = self.find_platform()
@@ -10226,8 +10478,9 @@ class Nova:
         floor_y = self.floor_y()
         target = floor_y
         if self.platform:
-            target = min(floor_y, max(self.virtual_bounds()[1],
-                                      self.platform[1] - H + 11 + drop))
+            # Kein Klemmen am Bildschirmrand: das Fenster darf oben überstehen, sonst
+            # stünde NOVA bei Fenstern nahe der Oberkante im statt auf dem Fenster.
+            target = min(floor_y, self.platform[1] - H + 11 + drop)
         self.y += (target - self.y) * 0.18
         if abs(target - self.y) < 1:
             self.y = target
@@ -10605,7 +10858,7 @@ class Nova:
         self.x += ((mon[2] - W + 10) - self.x) * 0.2
         self.y += ((mon[3] - H - 8 + self.foot_drop()) - self.y) * 0.2
 
-    def update_living_cursor(self, now):
+    def update_living_cursor(self, now, fk=1.0):
         if not self.living_mode or not IS_WIN or self.phone_mode:
             return
         point = wintypes.POINT()
@@ -10645,6 +10898,212 @@ class Nova:
             self.system_dozing = False
             self.say(random.choice(("Hab dich gesehen.", "Na, was machst du da?",
                                     "Ich passe auf.")), 3, speak=False)
+
+    # ================= Cursor-Interaktionen (Lebensmodus) =================
+    CURSOR_LINES = {
+        "dwell": ("Äh... hallo? Du stehst auf mir.", "Ich spüre deinen Zeiger.", "Suchst du was bei mir?"),
+        "cozy": ("Hier ist es gemütlich.", "Bleib ruhig so, Choom.", "Mhm, warm hier."),
+        "flinch": ("Huch! Nicht so schnell!", "Whoa, Maus-Raser!", "Pass auf mit dem Ding!"),
+        "click": ("Klick! Hab ich gehört.", "Was hast du da angeklickt?", "Hey, was war das?"),
+        "still": ("Wir hängen einfach zusammen ab, ja?", "Dein Zeiger ist ganz brav.",
+                  "Ruhe vor dem Sturm?"),
+        "dizzy": ("Mir wird schwindelig!", "Hör auf zu kreisen, Choom!", "Alle Pixel drehen sich!"),
+        "chase": ("Ich krieg dich, Zeiger!", "Hey, bleib stehen!", "Fangen! Ich bin dran."),
+        "caught": ("Gefangen! Hihi.", "Hab ihn!", "Erwischt!"),
+        "lost": ("Zu schnell für mich.", "Du entkommst mir... diesmal.", "Puh, aufgegeben."),
+        "tickle": ("Hihi, nicht kitzeln!", "Das kitzelt!", "Aaah, Stopp!"),
+    }
+
+    def _cur_ready(self, key, wait):
+        """Abklingzeit pro Reaktion: True und neu starten, wenn sie abgelaufen ist."""
+        mono = time.monotonic()
+        if mono < self.cur_cd.get(key, 0.0):
+            return False
+        self.cur_cd[key] = mono + wait
+        return True
+
+    def _cur_say(self, key, seconds=3):
+        self.say(random.choice(self.CURSOR_LINES[key]), seconds, speak=False)
+
+    def cursor_busy(self):
+        return bool(self.sleeping or self.system_dozing or self.dragging or self.mini
+                    or self.game_end or self.quitting or self.naming or self.prompt
+                    or self.radial_window is not None or self.phys_active
+                    or self.music_visible() or self.airborne()
+                    or getattr(self, "acc_edit", False) or self.ac_running)
+
+    def cursor_move_extra(self, fk, step):
+        """Zusätzliche Schritte beim Jagen/Fliehen (Richtung = self.dir), im Laufbereich."""
+        lo, hi = self.walk_bounds()
+        before = self.x
+        self.x = min(max(self.x + step * fk * self.dir, lo), hi)
+        return abs(self.x - before) < 0.01          # True = am Rand angekommen
+
+    def update_cursor_interactions(self, now, fk, point):
+        """Mehr Reaktionen auf den Mauszeiger: Blick folgen, Streicheln durch Wischen, Zusammenzucken
+        bei schnellem Zeiger, Klick-Reaktion, Kreisen (schwindelig), Zeiger jagen und davonlaufen."""
+        mono = time.monotonic()
+        pos = (point.x, point.y)
+        prev, prev_t = self.cur_ix_pos, self.cur_ix_t
+        self.cur_ix_pos, self.cur_ix_t = pos, mono
+        left_down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        clicked = left_down and not self.cur_ix_left
+        self.cur_ix_left = left_down
+        if prev is None or self.cursor_busy():
+            if self.cursor_mode:
+                self.cursor_mode = None
+            self.cur_hover_since = self.cur_still_since = 0.0
+            self.cur_wipes, self.cur_wipe_dir, self.cur_ang, self.cur_spin = [], 0, None, 0.0
+            return
+        dt = max(mono - prev_t, 1e-3)
+        mvx, mvy = pos[0] - prev[0], pos[1] - prev[1]
+        speed = math.hypot(mvx, mvy) / dt
+        if dt > 0.5 or speed > 20000:               # Pause oder Sprung (z. B. Fensterwechsel): ignorieren
+            speed, mvx, mvy = 0.0, 0.0, 0.0
+        vx = mvx / dt
+        moved = abs(mvx) + abs(mvy) > 0
+        cx = self.x + self.display_width() / 2
+        cy = self.y + self.display_height() - 90
+        dx, dy = point.x - cx, point.y - cy
+        dist = math.hypot(dx, dy)
+        over = abs(dx) <= 70 and abs(dy) <= 100
+
+        # --- Jagen / Davonlaufen ---
+        if self.cursor_mode:
+            if now > self.cursor_mode_until:
+                if self.cursor_mode == "chase":
+                    self._cur_say("lost")
+                self.cursor_mode = None
+            elif self.cursor_mode == "chase":
+                self.dir = 1 if dx >= 0 else -1
+                self.cursor_look_dir, self.cursor_attention_until = self.dir, now + 0.5
+                if abs(dx) < 50 and abs(dy) < 220:
+                    self.cursor_mode = None
+                    self._cur_say("caught")
+                    self.s["fun"] = clamp(self.s["fun"] + 6)
+                    self.add_points(1)
+                    self.set_emotion_override("happy", 4)
+                elif abs(dx) > 1000 or self.cursor_move_extra(fk, 2.4):
+                    self.cursor_mode = None
+            else:                                    # flee
+                self.dir = -1 if dx >= 0 else 1
+                self.cursor_look_dir, self.cursor_attention_until = -self.dir, now + 0.5
+                if dist > 500 or self.cursor_move_extra(fk, 3.2):
+                    self.cursor_mode = None
+        elif (mono >= self.cur_next_chase and self.walking and 140 <= abs(dx) <= 650
+              and abs(dy) <= 500 and moved and not over):
+            self.cur_next_chase = mono + random.uniform(70, 150)
+            self.cursor_mode, self.cursor_mode_until = "chase", now + 6.5
+            self.last_cursor_reaction_at = mono       # keine zweite Begrüßung
+            self._cur_say("chase", 4)
+
+        # --- Blick folgt dem Zeiger (nur wenn sie steht) ---
+        if moved and abs(dx) <= 600 and not self.cursor_mode and not self.moving():
+            self.cursor_look_dir = 1 if dx >= 0 else -1
+            self.cursor_attention_until = max(self.cursor_attention_until, now + 0.8)
+
+        # --- Zusammenzucken bei sehr schnellem Zeiger in der Nähe ---
+        if dist <= 230 and speed > 2600 and self._cur_ready("flinch", 10):
+            self.bump_until = now + 0.3
+            self.cursor_look_dir = 1 if dx >= 0 else -1
+            self.cursor_attention_until = now + 1.5
+            self._cur_say("flinch")
+            if self.walking and not over and random.random() < 0.5:
+                self.cursor_mode, self.cursor_mode_until = "flee", now + 1.6
+
+        # --- Zeiger ruht auf NOVA / Streicheln durch Hin-und-her-Wischen ---
+        if over and not left_down:
+            if speed < 120:
+                if not self.cur_hover_since:
+                    self.cur_hover_since = mono
+                dwell = mono - self.cur_hover_since
+                if dwell >= 6 and self._cur_ready("cozy", 90):
+                    self._cur_say("cozy")
+                    self.set_emotion_override("happy", 3)
+                elif dwell >= 2 and self._cur_ready("dwell", 40):
+                    self._cur_say("dwell")
+            else:
+                self.cur_hover_since = 0.0
+            d = (vx > 150) - (vx < -150)
+            if d and d != self.cur_wipe_dir:
+                if self.cur_wipe_dir:
+                    self.cur_wipes.append(mono)
+                self.cur_wipe_dir = d
+            self.cur_wipes = [t for t in self.cur_wipes if mono - t < 1.6]
+            if len(self.cur_wipes) >= 3 and self._cur_ready("wipe", 5):
+                self.cur_wipes = []
+                self.pet()
+        else:
+            self.cur_hover_since = 0.0
+            self.cur_wipes, self.cur_wipe_dir = [], 0
+
+        # --- Zeiger kreist um NOVA: schwindelig ---
+        if 60 <= dist <= 380:
+            ang = math.atan2(dy, dx)
+            if self.cur_ang is not None:
+                step = (ang - self.cur_ang + math.pi) % (2 * math.pi) - math.pi
+                self.cur_spin = self.cur_spin * 0.5 ** (dt / 3.0) + step
+            self.cur_ang = ang
+            if abs(self.cur_spin) >= 2 * math.pi * 1.25 and self._cur_ready("dizzy", 20):
+                self.cur_spin = 0.0
+                self.bump_until = now + 0.8
+                self._cur_say("dizzy", 4)
+        else:
+            self.cur_ang, self.cur_spin = None, 0.0
+
+        # --- Klick in der Nähe ---
+        if clicked and not over and dist <= 320 and self._cur_ready("click", 8) and random.random() < 0.6:
+            self.cursor_look_dir = 1 if dx >= 0 else -1
+            self.cursor_attention_until = now + 1.5
+            self.bump_until = now + 0.15
+            self._cur_say("click")
+
+        # --- Zeiger ruht länger neben NOVA ---
+        if not over and dist <= 260 and speed < 20:
+            if not self.cur_still_since:
+                self.cur_still_since = mono
+            elif mono - self.cur_still_since >= 7 and self._cur_ready("still", 120):
+                self._cur_say("still", 4)
+                self.s["fun"] = clamp(self.s["fun"] + 3)
+                self.set_emotion_override("happy", 3)
+        else:
+            self.cur_still_since = 0.0
+
+    def update_cursor_play(self, now, fk):
+        """Cursor-Interaktionen: laufen unabhängig vom Lebensmodus, solange 'Cursorspiele' an ist."""
+        if not IS_WIN or self.phone_mode:
+            return
+        if not self.cursor_play:
+            self.cursor_mode = None
+            self.cur_ix_pos = None
+            return
+        point = wintypes.POINT()
+        if user32.GetCursorPos(ctypes.byref(point)):
+            self.update_cursor_interactions(now, fk, point)
+
+    def toggle_cursor_play(self):
+        if not IS_WIN:
+            self.say("Die Cursorspiele funktionieren nur unter Windows.", 4, speak=False)
+            return
+        self.cursor_play = not self.cursor_play
+        self.s["cursor_play"] = self.cursor_play
+        self.cursor_mode = None
+        self.cur_ix_pos = None
+        self.say("Cursorspiele an. Pass auf deinen Zeiger auf!" if self.cursor_play
+                 else "Cursorspiele aus.", 3, speak=False)
+        self.save()
+
+    def on_middle_click(self, e):
+        """Mittelklick auf NOVA: kitzeln (gehört zu den Cursorspielen)."""
+        now = time.time()
+        if (not self.cursor_play or self.game_end or self.sleeping or self.quitting
+                or getattr(self, "acc_edit", False) or now - self.last_tickle < 1.5):
+            return
+        self.last_tickle = now
+        self.bump_until = now + 0.4
+        self.s["fun"] = clamp(self.s["fun"] + 3)
+        self.set_emotion_override("happy", 3)
+        self._cur_say("tickle")
 
     def system_idle_seconds(self):
         if not IS_WIN:
@@ -11068,7 +11527,8 @@ class Nova:
 
     def _acc_hit(self, x, y):
         k = self.accessory_scale()
-        ids = self.canvas.find_overlapping(x - 4, y - 4, x + 4, y + 4)
+        ids = [t for t in self.canvas.find_overlapping(x - 4, y - 4, x + 4, y + 4)
+               if "accedit" not in self.canvas.gettags(t)]
         best = None
         for key, mid, end in getattr(self, "acc_ranges", []):
             if any(mid < t < end for t in ids):
@@ -11090,8 +11550,18 @@ class Nova:
             return
         k = self.accessory_scale() or 1.0
         pos = self.s["acc_pos"].setdefault(self.acc_sel, [0.0, 0.0, 1.0])
+        dy = e.y - self.acc_drag[1]
+        if dy < 0:                                   # nicht über den oberen Rand/Hinweis hinaus
+            c = self.canvas
+            for key, mid, end in getattr(self, "acc_ranges", []):
+                if key == self.acc_sel:
+                    bs = [c.bbox(t) for t in c.find_withtag("acc") if mid < t < end]
+                    bs = [b for b in bs if b]
+                    if bs:
+                        dy = min(0, max(dy, ACC_MIN_TOP - min(b[1] for b in bs)))
+                    break
         pos[0] += (e.x - self.acc_drag[0]) / k
-        pos[1] += (e.y - self.acc_drag[1]) / k
+        pos[1] += dy / k
         self.acc_drag = (e.x, e.y)
 
     def _acc_wheel(self, e):
@@ -11432,7 +11902,7 @@ class Nova:
             if edge:                           # nie an Rand/Decke/Boden hängen bleiben
                 self.start_physics(vx, vy)
             elif not self.try_drop_on_window():
-                self.air_hold = True
+                self.air_hold = self.y < self.air_floor() - 8   # am Boden nie "in der Luft" stehen bleiben
             return
         self.start_physics(vx, vy)
         self.acc_begin_fall()
@@ -12126,6 +12596,8 @@ class Nova:
     # ================= Spielwerte =================
     def update_stats(self, dt, now):
         s = self.s
+        if self.mdn_t0 is not None:
+            self.sleeping = False                  # Zusammenbruch: kein Einschlafen
         if self.sleeping:
             s["energy"] = clamp(s["energy"] + SLEEP_REGEN * dt)
             rate = 0.5
@@ -12135,7 +12607,7 @@ class Nova:
         else:
             s["energy"] = clamp(s["energy"] - DECAY["energy"] * dt)
             rate = 1.0
-            if s["energy"] <= 3:
+            if s["energy"] <= 3 and self.mdn_t0 is None:
                 self.sleeping = True
                 self.cancel_game()
                 self.say("Mir fallen die Augen zu... Zzz", 4)
@@ -12154,6 +12626,84 @@ class Nova:
         if now - self.last_save >= 30:
             self.last_save = now
             self.save()
+
+    # ---- Zusammenbruch: alles auf 0 -> Glitchen wird immer stärker, dann Hüpfen durch den Bildschirm ----
+    def meltdown_level(self, now):
+        return 0.0 if self.mdn_t0 is None else min(1.0, (now - self.mdn_t0) / MDN_RAMP)
+
+    def update_meltdown(self, now, fk):
+        s = self.s
+        if self.phone_mode or self.quitting:
+            return
+        if self.rbt_t0 is not None:                                   # Neustart läuft
+            p = (now - self.rbt_t0) / RBT_TIME
+            if self.rbt_stage < len(RBT_LINES) and p >= RBT_LINES[self.rbt_stage][0]:
+                self.say(RBT_LINES[self.rbt_stage][1], 4)
+                self.rbt_stage += 1
+            if random.random() < 0.5 * (1 - min(p, 1.0)):
+                self.bump_until = now + 0.15                          # Glitches klingen ab
+            if p >= 1.0:
+                self.rbt_t0 = None
+        if self.mdn_t0 is None:
+            if s["food"] <= 6 and s["fun"] <= 6 and s["energy"] <= 10:
+                self.mdn_t0, self.sleeping, self.mdn_stage, self.rbt_t0 = now, False, 0, None
+                self.cancel_game()
+                self.say("Alles auf null... System instabil!", 5)
+            return
+        if s["food"] > 10 or s["fun"] > 10 or s["energy"] > 15:     # Zuwendung beendet den Zusammenbruch
+            self.mdn_t0 = None
+            self.rbt_t0, self.rbt_stage = now, 0               # Neustart nach dem Zusammenbruch
+            self.say("Zuwendung erkannt. Neustart wird eingeleitet.", 4)
+            return
+        raw = self.meltdown_level(now)
+        if self.mdn_stage < len(MDN_LINES) and raw >= MDN_LINES[self.mdn_stage][0]:
+            self.say(MDN_LINES[self.mdn_stage][1], 5)      # Text zu jeder Stufe (wird gesprochen)
+            self.mdn_stage += 1
+        lvl = 0.3 + 0.7 * raw                                  # sofort sichtbar, dann stärker
+        if random.random() < 0.03 + 0.5 * lvl:
+            self.bump_until = now + 0.15 + 0.3 * lvl              # Körper-Glitch
+        if random.random() < 0.01 + 0.15 * lvl:
+            self.teleport_until = now + 0.2                        # Glitch-Streifen
+        if self.meltdown_level(now) < 1.0 or self.dragging or self.mini:
+            return
+        lo, hi = self.walk_bounds()
+        if self.x < lo + 60:
+            self.mdn_dir = 1
+        elif self.x > hi - 60:
+            self.mdn_dir = -1
+        if self.can_physics():
+            if not self.phys_active and now - self.mdn_hop_t > 0.5:
+                self.mdn_hop_t = now
+                self.start_physics(self.mdn_dir * random.uniform(900, 1500), -random.uniform(900, 1400))
+        else:
+            self.x = clamp(self.x + self.mdn_dir * 22 * fk, lo, hi)   # ohne Physik: hastiger Lauf
+
+    def draw_meltdown(self, now, top, base):
+        """Dauer-Glitch beim Zusammenbruch: Streifen und Blöcke über der ganzen Figur."""
+        if self.rbt_t0 is not None and not self.phone_mode:           # Reboot-Balken
+            p = min(1.0, (now - self.rbt_t0) / RBT_TIME)
+            c, cx, y = self.canvas, W // 2, int((top + base) / 2)
+            c.create_rectangle(cx - 45, y, cx + 45, y + 10, fill=PANEL, outline=ACCENT, width=2)
+            c.create_rectangle(cx - 43, y + 2, cx - 43 + 86 * p, y + 8, fill=ACCENT, outline="")
+            c.create_text(cx, y - 9, text=f"REBOOT {int(p * 100)}%", fill=LIGHT,
+                          font=("Consolas", 8, "bold"))
+            return
+        if self.mdn_t0 is None or self.phone_mode:
+            return
+        lvl = 0.3 + 0.7 * self.meltdown_level(now)
+        c, cx = self.canvas, W // 2
+        cols = (ACCENT, ACCENT, "#a64dff", "#3d8bff", LIGHT)
+        h = max(20, int(base - top))
+        for _ in range(int(4 + 14 * lvl)):
+            y = base - random.randint(0, h)
+            w = random.randint(10, int(30 + 50 * lvl))
+            off = random.randint(-int(10 + 40 * lvl), int(10 + 40 * lvl))
+            c.create_line(cx - w + off, y, cx + w + off, y, fill=random.choice(cols),
+                          width=random.choice((1, 2, 3)))
+        for _ in range(int(1 + 4 * lvl)):
+            x, y = cx + random.randint(-45, 45), base - random.randint(0, h)
+            c.create_rectangle(x, y, x + random.randint(6, 26), y + random.randint(2, 7),
+                               fill=random.choice(cols), outline="")
 
     # ================= Zeichnen =================
     def air_floor(self):
@@ -12186,12 +12736,15 @@ class Nova:
 
     def airborne(self):
         """Frei in der Luft: abgelegt (air_hold) oder weder auf Boden noch auf Fenster."""
+        if self.air_hold and self.y >= self.air_floor() - 8:
+            self.air_hold = False              # steht wieder am Boden: Laufen/Gehen freigeben
         return self.air_hold or (self.physics_enabled and not self.mini and not self.phys_active
                                  and self.platform is None and self.perch_hwnd is None
                                  and not self.music_visible() and self.y < self.air_floor() - 8)
 
     def moving(self):
-        return (self.walking and not self.burst_mode and not self.dragging and not self.sleeping and not self.mini
+        return (self.walking and not (self.burst_mode and time.time() < self.burst_until)
+                and self.rbt_t0 is None and not self.dragging and not self.sleeping and not self.mini
                 and not self.system_dozing and time.time() >= self.cursor_pause_until
                 and not self.phone_mode and self.radial_window is None and not self.quitting
                 and not (self.game_end and self.game_mode == "jump")
@@ -12516,8 +13069,14 @@ class Nova:
         if getattr(self, "acc_phase", "worn") != "worn":
             self._acc_fx(c, marks)
         if getattr(self, "acc_edit", False):
-            c.create_text(cx, top - 30, text="ANORDNEN: ziehen · Mausrad = Größe · Rechtsklick = Reset · Leerklick = fertig",
-                          fill=LIGHT, font=("Consolas", 7, "bold"), width=W - 20)
+            tx = c.create_text(cx, 6, anchor="n", tags="accedit",
+                               text="ANORDNEN: ziehen · Mausrad = Größe · Rechtsklick = Reset · Leerklick = fertig",
+                               fill=LIGHT, font=("Consolas", 7, "bold"), width=W - 20, justify="center")
+            bb = c.bbox(tx)
+            if bb:
+                bg = c.create_rectangle(bb[0] - 4, bb[1] - 2, bb[2] + 4, bb[3] + 2, fill=PANEL2,
+                                        outline=EDGE, tags="accedit")
+                c.tag_lower(bg, tx)
 
     def draw_ai_orb(self, top):
         if not self.ai_enabled:
@@ -12925,6 +13484,7 @@ class Nova:
         fk = min(dt * 30, 3.0)       # Frames-Faktor (1.0 bei 30 FPS)
 
         self.update_stats(dt, now)
+        self.update_meltdown(now, fk)
         self.update_idle(now)
         self.update_timer(now)
         self.update_reminders()
@@ -12951,7 +13511,8 @@ class Nova:
             self.remember_foreground_window()
         if self.t // 300 != self._tp // 300:      # alle ~10 s: neuer Tag?
             self.daily_check()
-        self.update_living_cursor(now)
+        self.update_living_cursor(now, fk)
+        self.update_cursor_play(now, fk)
         if (self.feeding or self.prompt) and now > self.feed_deadline:
             self.cancel_feed()
         if self.radial_window is not None:
@@ -13032,6 +13593,10 @@ class Nova:
         ret = getattr(self, "burst_ret", None)
         rp = min(1.0, (now - ret[0]) / BURST_RETURN) if ret else 1.0
         flick = bool(ret) and random.random() < 0.35 * (1 - rp * 0.6)
+        if self.rbt_t0 is not None and random.random() < 0.4 * (1 - min(1.0, (now - self.rbt_t0) / RBT_TIME)):
+            flick = True
+        if self.mdn_t0 is not None and random.random() < 0.55 * self.meltdown_level(now):
+            flick = True                           # Zusammenbruch: flackert immer stärker
         if not hidden and not flick:
             self.draw_character(top, base)
         self.draw_air_glitch(base)
@@ -13044,6 +13609,7 @@ class Nova:
             return
         self.draw_music_box(now)
         self.draw_glitch_effect(now)
+        self.draw_meltdown(now, top, base)
         if not flick:
             self.draw_accessories(top)             # Cosmetics erst wieder, wenn das normale Bild da ist
         if ret:                                    # gleiche Glitch-Streifen wie bei den Cosmetics
@@ -13063,6 +13629,7 @@ class Nova:
         self.draw_game(now)
         self.draw_alarm(now)
         self.shifted("bubble_dy", self.draw_bubble, now, top)
+        self.canvas.tag_raise("accedit")          # Anordnen-Hinweis nie von Cosmetics/HUD überdeckt
         self._set_geometry(self.display_width(), self.display_height())
         self._schedule_tick()
 
