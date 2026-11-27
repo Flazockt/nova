@@ -229,6 +229,11 @@ if IS_WIN:
 HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 SAVE_FILE = os.path.join(HERE, "nova_save.json")
 AI_MEMORY_FILE = os.path.join(HERE, "nova_ai_memory.json")
+PEER_DIR = os.path.join(tempfile.gettempdir(), "nova_peers")   # gemeinsamer Ordner für mehrere NOVA-Instanzen
+PEER_STALE = 3.0                    # Sekunden ohne Lebenszeichen = Instanz gilt als beendet
+PEER_MEET_DIST = 120                # Abstand (px), ab dem sich zwei NOVAs begrüßen
+PEER_HELLO = ("Hey {n}!", "Oh, {n}, da bist du ja.", "Na, {n}, alles klar?", "Hi {n}!")
+PEER_REPLY = ("Hi! Schön dich zu sehen.", "Hey, was machst du so?", "Na, du auch hier?", "Hallo! Alles gut bei dir?")
 EMOTION_IMAGE_DIR = os.path.join(HERE, "emotion_images")
 LEGACY_SPRITE = os.path.join(HERE, "sprite.png")
 PHONE_IMAGE_FILE = os.path.join(HERE, "phone_image.png")
@@ -2097,7 +2102,7 @@ def default_state():
             "mini_manual": False, "walking": True, "voice_enabled": False,
             "phone_mode": False, "phone_image": "", "phone_talk_image": "",
             "living_mode": False, "cursor_play": True, "sys_monitor": False, "synth_voice": True,
-            "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False,
+            "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False, "peer_mode": True,
             "accent": "Rot", "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
             "idle": default_idle(), "timer": {"end": 0.0, "total": 0.0, "label": ""},
             "rpg": default_rpg(),
@@ -2159,7 +2164,7 @@ def sanitize_state(state):
     state["words"] = dict(list(words.items())[:MAX_WORDS])
     for k in ("emotion_setup_done", "window_mode", "mini_auto", "mini_manual",
               "walking", "voice_enabled", "phone_mode", "living_mode", "cursor_play",
-              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode"):
+              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode", "peer_mode"):
         state[k] = bool(state.get(k, base[k]))
     for k, lo, hi in (("bubble_dy", -90, 280), ("hud_dy", 0, 320)):
         try:
@@ -3352,6 +3357,11 @@ class Nova:
         self.ice_free = False              # Musikmodus: NOVA liegt nach dem Rutschen frei im Bild
         self.sfx_enabled = self.s["sfx"]
         self.burst_mode = self.s["burst_mode"]
+        self.peer_mode = self.s["peer_mode"]
+        self.peer_file = os.path.join(PEER_DIR, f"{os.getpid()}.json")
+        self.peers, self.peer_sync = [], 0.0
+        self.peer_tgt, self.peer_until, self.peer_cd = None, 0.0, 0.0
+        atexit.register(self.peer_leave)
         self.burst_until = self.burst_t0 = 0.0
         self.burst_parts, self.burst_blood, self.burst_shards_list = [], [], []
         self.sfx_dir = None
@@ -3431,6 +3441,7 @@ class Nova:
         goodbye = random.choice(choices or GOODBYE_LINES)
         self.s["last_goodbye"] = goodbye
         self.quit_duration = 3.2 if self.voice_enabled else 2.4
+        self.peer_leave()
         self.stop_voice()
         self.say(goodbye, self.quit_duration, speak=self.voice_enabled)
         self.save()
@@ -4437,6 +4448,8 @@ class Nova:
                  "on": self.physics_enabled},
                 {"label": "Platzen", "icon": "💥", "action": self.toggle_burst,
                  "on": self.burst_mode},
+                {"label": "Andere\nNOVAs", "icon": "👋", "action": self.toggle_peer_mode,
+                 "on": self.peer_mode},
                 {"label": "Lebensmodus", "icon": "🧬", "action": self.toggle_living_mode,
                  "on": self.living_mode},
                 {"label": "Cursor-\nspiele", "icon": "🖱️", "action": self.toggle_cursor_play,
@@ -12311,6 +12324,104 @@ class Nova:
         if speed > 200:
             self.bump_until = time.time() + 0.35
 
+    def toggle_peer_mode(self):
+        self.peer_mode = not self.peer_mode
+        self.s["peer_mode"] = self.peer_mode
+        self.peer_tgt = None
+        if not self.peer_mode:
+            self.peer_leave()
+        self.save()
+        self.say("Treffen an: Ich erkenne andere NOVAs." if self.peer_mode
+                 else "Treffen aus.", 4, speak=False)
+
+    def peer_leave(self):
+        try:
+            os.remove(self.peer_file)
+        except OSError:
+            pass
+
+    def peer_sync_files(self, now):
+        """Schreibt die eigene Position und liest die anderer laufender NOVA-Instanzen."""
+        try:
+            os.makedirs(PEER_DIR, exist_ok=True)
+            tmp = self.peer_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "ts": now, "x": self.x, "y": self.y,
+                           "w": self.display_width(), "tgt": self.peer_tgt,
+                           "name": str(self.s.get("name", ""))[:20]}, f)
+            os.replace(tmp, self.peer_file)
+            peers = []
+            for name in os.listdir(PEER_DIR):
+                if not name.endswith(".json") or name == os.path.basename(self.peer_file):
+                    continue
+                path = os.path.join(PEER_DIR, name)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        d = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                if now - float(d.get("ts", 0)) > PEER_STALE:
+                    if now - float(d.get("ts", 0)) > 60:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                    continue
+                peers.append(d)
+            self.peers = peers
+        except (OSError, ValueError, TypeError):
+            self.peers = []
+
+    def update_peers(self, now, fk):
+        """Zwei NOVA-Programme: eine läuft auf die andere zu, beide begrüßen sich und bleiben kurz stehen."""
+        if not self.peer_mode:
+            return
+        if now - self.peer_sync >= 0.4:
+            self.peer_sync = now
+            self.peer_sync_files(now)
+        if not self.peers or self.cursor_busy() or self.burst_hide():
+            self.peer_tgt = None
+            return
+        cx = self.x + self.display_width() / 2
+        near = None
+        for d in self.peers:
+            if abs(float(d["y"]) - self.y) < 150:
+                dx = float(d["x"]) + float(d.get("w", W)) / 2 - cx
+                if near is None or abs(dx) < abs(near[1]):
+                    near = (d, dx)
+        if near is None:
+            self.peer_tgt = None
+            return
+        d, dx = near
+        look = 1 if dx >= 0 else -1
+        if abs(dx) < PEER_MEET_DIST and now >= self.peer_cd:        # Begegnung
+            self.peer_cd = now + 60
+            self.peer_tgt = None
+            self.cursor_pause_until = now + 5
+            self.cursor_look_dir = self.dir = look
+            self.cursor_attention_until = now + 5
+            self.set_emotion_override("happy", 5)
+            first = os.getpid() < int(d["pid"])
+            if first:
+                self.say(random.choice(PEER_HELLO).format(n=d.get("name") or "du"), 3, speak=False)
+            else:
+                self.root.after(1500, lambda: None if self.quitting else
+                                self.say(random.choice(PEER_REPLY), 3, speak=False))
+            return
+        if d.get("tgt") == os.getpid() and now >= self.peer_cd:      # wird besucht: stehen bleiben
+            self.cursor_pause_until = now + 1.0
+            self.cursor_look_dir, self.cursor_attention_until = look, now + 1.0
+            return
+        if self.peer_tgt is not None:                                # unterwegs zur anderen
+            if now > self.peer_until or not self.moving():
+                self.peer_tgt = None
+            else:
+                self.dir = look
+        elif (now >= self.peer_cd and self.walking and self.moving()
+              and random.random() < 0.003 * fk):
+            self.peer_tgt, self.peer_until = int(d["pid"]), now + 15
+            self.dir = look
+
     def toggle_burst(self):
         self.burst_mode = not self.burst_mode
         self.s["burst_mode"] = self.burst_mode
@@ -13513,6 +13624,7 @@ class Nova:
             self.daily_check()
         self.update_living_cursor(now, fk)
         self.update_cursor_play(now, fk)
+        self.update_peers(now, fk)
         if (self.feeding or self.prompt) and now > self.feed_deadline:
             self.cancel_feed()
         if self.radial_window is not None:
