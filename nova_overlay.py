@@ -65,6 +65,15 @@ Verbesserungen dieser Version:
 Neu: Emotion "Sitzen" (statt Musik) mit eigener Fußlinie (Größe & Füße), Emotion "Luft" bei
 Wurf/Schütteln/Ablegen in der Luft, Pendel um den Greifpunkt beim Schütteln.
 
+RPG (Menü > Spielen > RPG), Zelda-Gameplay im Cyberpunk-Look: Dorf mit Schieber-Laden, Oberwelt aus
+3x3 Sektoren mit Bildschirmwechsel, Netz-Gate zu Nodes (Verliesen) mit Türen, die sich im Kampf schließen,
+Schlüsseltruhe und verschlossener Bosstür. Wiederspielwert: Nach jedem Boss würfelt sich das Netz neu
+(Gate, Höhlen und Geheimversteck wechseln den Ort), 11 Implantate zur Auswahl, Node-Mutatoren
+(Überspannung, Elite-Jagd, Glaskanone, Sparprogramm), Elite-Gegner, Schwarzmarkt-Terminal, wechselndes
+Ladensortiment, 4 Node-Stile. Soundeffekte (synthetisch, über das vorhandene Effekt-System, abschaltbar
+über „Effekte" oder den Sound-Knopf im RPG). Bedienung: WASD/Pfeile, Leertaste = Klinge/Sprechen/Öffnen,
+B = EMP, Q = Nano-Kit.
+
 Bedienung: Maus über NOVA = Statusanzeige | ziehen und loslassen = werfen
            Doppelklick = streicheln | Rechtsklick = Menü
 """
@@ -595,7 +604,23 @@ PHYS_ICE_SPIN = 0.05           # sanfte Drehung beim Werfen auf Eis
 SFX_RATE = 22050
 SFX_MIN_GAP = 0.25             # Mindestabstand zwischen zwei Effekten (Sekunden)
 SFX_KIND_GAP = 0.6             # Mindestabstand pro Effekt-Art
-SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land", "tick", "win", "burst")
+# RPG-Geräusche: (Priorität, Dauer in s, Mindestabstand pro Art). Höhere Priorität würgt niedrigere ab, nicht umgekehrt.
+RPG_SFX_META = {
+    "rpg_swing": (1, 0.12, 0.12), "rpg_beam": (2, 0.18, 0.2), "rpg_hurt": (4, 0.2, 0.15),
+    "rpg_death": (6, 0.9, 1.0), "rpg_gem": (2, 0.16, 0.04), "rpg_heart": (2, 0.3, 0.1),
+    "rpg_hc": (5, 0.7, 0.5), "rpg_boom": (5, 0.55, 0.1), "rpg_fuse": (2, 0.08, 0.2),
+    "rpg_shot": (1, 0.1, 0.12), "rpg_fire": (3, 0.35, 0.3), "rpg_door_shut": (4, 0.3, 0.5),
+    "rpg_door_open": (4, 0.3, 0.5), "rpg_unlock": (4, 0.25, 0.2), "rpg_locked": (3, 0.18, 0.4),
+    "rpg_chest": (4, 0.45, 0.3), "rpg_cut": (1, 0.14, 0.08), "rpg_scroll": (2, 0.3, 0.5),
+    "rpg_portal": (3, 0.45, 0.5), "rpg_blip": (1, 0.04, 0.03), "rpg_potion": (3, 0.35, 0.3),
+    "rpg_boss": (5, 1.0, 1.0), "rpg_victory": (6, 0.9, 1.0), "rpg_aegis": (4, 0.25, 0.2),
+    # schon vorhandene Effekte, die das RPG mitbenutzt
+    "hit": (2, 0.07, 0.04), "kill": (3, 0.36, 0.08), "buy": (3, 0.18, 0.1), "upgrade": (5, 0.32, 0.3),
+    "reboot": (5, 0.6, 0.5), "tick": (1, 0.03, 0.05), "clink": (3, 0.15, 0.08), "thud_hard": (4, 0.18, 0.2),
+}
+RPG_NEW_SFX = tuple(k for k in RPG_SFX_META if k.startswith("rpg_"))
+SFX_KINDS = ("whoosh", "swish", "thud_soft", "thud_hard", "bump", "clink", "land", "tick", "win", "burst",
+             "hack", "hit", "kill", "buy", "upgrade", "reboot") + RPG_NEW_SFX
 PHYS_THROW_LINES = ("Wheeee!", "Fliegen kann ich auch!", "Houston, wir haben ein Problem!")
 PHYS_SHAKE_LINES = ("Hey, mir wird schwindelig!", "Nicht schütteln, Choom!", "Alle Pixel verrutschen!")
 PHYS_HIT_LINES = ("Aua!", "Mein Chrom!", "Das war hart, Choom.")
@@ -718,7 +743,7 @@ def fmt_duration(seconds):
 
 def default_idle():
     return {"bits": 0.0, "total": 0.0, "run": 0.0, "gens": {g[0]: 0 for g in IDLE_GENS}, "upgrades": [],
-            "chips": 0, "reboots": 0, "clicks": 0}
+            "chips": 0, "reboots": 0, "clicks": 0, "kills": 0}
 
 
 def sanitize_idle(raw):
@@ -731,7 +756,7 @@ def sanitize_idle(raw):
         except (TypeError, ValueError):
             value = 0.0
         base[key] = min(IDLE_BITS_CAP, value) if math.isfinite(value) and value > 0 else 0.0
-    for key in ("chips", "reboots", "clicks"):
+    for key in ("chips", "reboots", "clicks", "kills"):
         try:
             base[key] = max(0, int(raw.get(key, 0)))
         except (TypeError, ValueError, OverflowError):
@@ -746,6 +771,530 @@ def sanitize_idle(raw):
     valid = {u[0] for u in IDLE_UPGRADES}
     base["upgrades"] = [u for u in dict.fromkeys(owned) if u in valid] if isinstance(owned, list) else []
     return base
+
+
+# ================= Daten-Farm: animierte Szene =================
+SCENE_H = 150
+SCENE_GROUND = 114                 # Boden-Linie (Füße der Figuren)
+SCENE_HERO_X = 52
+SCENE_GOLD = "#ffc94d"
+SCENE_CYAN = "#4fd8ff"
+SCENE_GREEN = "#5df2a0"
+SCENE_PURPLE = "#b078ff"
+SCENE_MAX_FX = 140
+
+
+def _scene_bot(c, x, y, t, ph):
+    """Mini-Bot: rollt hin und her und trägt einen Bit-Würfel."""
+    x += math.sin(t * 1.3 + ph) * 12
+    face = 1 if math.cos(t * 1.3 + ph) > 0 else -1
+    roll = t * 7 * face
+    for wx in (x - 5, x + 5):
+        c.create_oval(wx - 4, y - 8, wx + 4, y, fill=PANEL2, outline=LIGHT, tags="dyn")
+        c.create_line(wx, y - 4, wx + math.cos(roll) * 3.5, y - 4 + math.sin(roll) * 3.5,
+                      fill=LIGHT, tags="dyn")
+    c.create_rectangle(x - 8, y - 20, x + 8, y - 8, fill="#cfc4c6", outline=EDGE, width=2, tags="dyn")
+    ex = x + face * 2
+    c.create_oval(ex - 4, y - 18, ex + 4, y - 11, fill=PANEL, outline="", tags="dyn")
+    c.create_oval(ex - 2 + face, y - 16, ex + 2 + face, y - 12, fill=ACCENT, outline="", tags="dyn")
+    c.create_line(x, y - 20, x, y - 26, fill=LIGHT, tags="dyn")
+    tip = ACCENT if math.sin(t * 6 + ph) > 0 else LIGHT
+    c.create_oval(x - 2, y - 29, x + 2, y - 25, fill=tip, outline="", tags="dyn")
+    cube = y - 31 + math.sin(t * 4 + ph) * 1.5
+    c.create_rectangle(x + 5, cube - 4, x + 11, cube + 2, fill=SCENE_GOLD, outline=LIGHT, tags="dyn")
+
+
+def _scene_miner(c, x, y, t, ph):
+    """Daten-Miner: haut mit der Spitzhacke auf einen Daten-Kristall."""
+    swing = math.sin(t * 5 + ph)
+    c.create_polygon(x + 9, y, x + 11, y - 7, x + 17, y - 10, x + 22, y - 3, x + 21, y,
+                     fill=SCENE_CYAN, outline=mix_hex(SCENE_CYAN, PANEL, 0.5), tags="dyn")
+    c.create_rectangle(x - 5, y - 8, x - 1, y, fill=EDGE, outline="", tags="dyn")
+    c.create_rectangle(x + 1, y - 8, x + 5, y, fill=EDGE, outline="", tags="dyn")
+    c.create_rectangle(x - 6, y - 20, x + 6, y - 8, fill="#7a1a26", outline=ACCENT, tags="dyn")
+    c.create_rectangle(x - 6, y - 15, x + 6, y - 13, fill=LIGHT, outline="", tags="dyn")
+    c.create_oval(x - 5, y - 29, x + 5, y - 20, fill="#e9d2c0", outline="", tags="dyn")
+    c.create_arc(x - 6, y - 32, x + 6, y - 21, start=0, extent=180, fill=SCENE_GOLD,
+                 outline=EDGE, tags="dyn")
+    c.create_oval(x + 3, y - 27, x + 7, y - 23, fill=LIGHT, outline="", tags="dyn")
+    a = -0.35 + swing * 0.85
+    sx, sy = x + 4, y - 17
+    hx, hy = sx + math.cos(a) * 10, sy + math.sin(a) * 10
+    ex, ey = sx + math.cos(a) * 19, sy + math.sin(a) * 19
+    c.create_line(sx, sy, hx, hy, fill="#e9d2c0", width=3, tags="dyn")
+    c.create_line(hx, hy, ex, ey, fill="#a77b4b", width=2, tags="dyn")
+    px, py = -math.sin(a) * 4.5, math.cos(a) * 4.5
+    c.create_line(ex - px, ey - py, ex + px, ey + py, fill=LIGHT, width=3, tags="dyn")
+    if swing > 0.9:
+        for _ in range(3):
+            sparkx = x + 20 + random.uniform(-5, 5)
+            sparky = y - 8 + random.uniform(-7, 3)
+            c.create_rectangle(sparkx, sparky, sparkx + 2, sparky + 2, fill=SCENE_GOLD,
+                               outline="", tags="dyn")
+
+
+def _scene_rack(c, x, y, t, ph):
+    """Server-Rack mit blinkenden LEDs."""
+    c.create_rectangle(x - 10, y - 36, x + 10, y, fill=PANEL2, outline=ACCENT, width=2, tags="dyn")
+    for i in range(4):
+        yy = y - 33 + i * 8
+        c.create_rectangle(x - 8, yy, x + 8, yy + 6, fill="#241013", outline=EDGE, tags="dyn")
+        for j in range(3):
+            on = math.sin(t * (3 + i) + ph + j * 2.1 + i) > 0.1
+            color = (ACCENT if j == 2 else SCENE_GREEN) if on else DIM
+            c.create_rectangle(x - 6 + j * 4, yy + 2, x - 4 + j * 4, yy + 4, fill=color,
+                               outline="", tags="dyn")
+        c.create_line(x + 3, yy + 3, x + 7, yy + 3, fill=EDGE, tags="dyn")
+
+
+def _scene_cluster(c, x, y, t, ph):
+    """GPU-Cluster mit drehenden Lüftern."""
+    glow = mix_hex(EDGE, ACCENT, 0.5 + 0.5 * math.sin(t * 4 + ph))
+    c.create_rectangle(x - 15, y - 24, x + 15, y, fill=PANEL2, outline=glow, width=2, tags="dyn")
+    for fx, spin in ((x - 7, 1), (x + 7, -1)):
+        fy = y - 12
+        c.create_oval(fx - 6, fy - 6, fx + 6, fy + 6, fill=PANEL, outline=EDGE, tags="dyn")
+        for k in range(3):
+            a = t * 9 * spin + ph + k * 2.094
+            c.create_line(fx, fy, fx + math.cos(a) * 5, fy + math.sin(a) * 5, fill=SCENE_CYAN,
+                          width=2, tags="dyn")
+    c.create_rectangle(x - 12, y - 22, x - 8, y - 20, fill=SCENE_GREEN, outline="", tags="dyn")
+
+
+def _scene_quantum(c, x, y, t, ph):
+    """Quantenkern: schwebende Kugel mit kreisenden Elektronen."""
+    cy = y - 22 + math.sin(t * 2 + ph) * 3
+    c.create_oval(x - 10, y - 3, x + 10, y + 1, fill=PANEL2, outline=EDGE, tags="dyn")
+    c.create_oval(x - 14, cy - 5, x + 14, cy + 5, outline=DIM, tags="dyn")
+    c.create_oval(x - 5, cy - 14, x + 5, cy + 14, outline=DIM, tags="dyn")
+    r = 6 + math.sin(t * 5 + ph)
+    c.create_oval(x - r, cy - r, x + r, cy + r, fill=SCENE_CYAN, outline=LIGHT, tags="dyn")
+    for k in range(2):
+        a = t * 4 + ph + k * math.pi
+        ex, ey = x + math.cos(a) * 14, cy + math.sin(a) * 5
+        c.create_oval(ex - 2, ey - 2, ex + 2, ey + 2, fill=LIGHT, outline="", tags="dyn")
+        ex, ey = x + math.cos(a * 1.3) * 5, cy + math.sin(a * 1.3) * 14
+        c.create_oval(ex - 2, ey - 2, ex + 2, ey + 2, fill=SCENE_GOLD, outline="", tags="dyn")
+
+
+_NEURAL_NODES = ((-13, -26), (-3, -35), (10, -29), (-9, -13), (8, -14))
+_NEURAL_EDGES = ((0, 1), (1, 2), (0, 3), (1, 3), (1, 4), (2, 4), (3, 4))
+
+
+def _scene_neural(c, x, y, t, ph):
+    """Neuronetz: pulsierende Knoten mit wandernden Impulsen."""
+    c.create_oval(x - 10, y - 3, x + 10, y + 1, fill=PANEL2, outline=EDGE, tags="dyn")
+    for n, (a, b) in enumerate(_NEURAL_EDGES):
+        p = 0.5 + 0.5 * math.sin(t * 3 + ph + n)
+        (ax, ay), (bx, by) = _NEURAL_NODES[a], _NEURAL_NODES[b]
+        c.create_line(x + ax, y + ay, x + bx, y + by, fill=mix_hex(EDGE, SCENE_PURPLE, p), tags="dyn")
+    phase = t * 2 + ph
+    a, b = _NEURAL_EDGES[int(phase) % len(_NEURAL_EDGES)]
+    f = phase % 1
+    (ax, ay), (bx, by) = _NEURAL_NODES[a], _NEURAL_NODES[b]
+    px, py = x + ax + (bx - ax) * f, y + ay + (by - ay) * f
+    c.create_oval(px - 2, py - 2, px + 2, py + 2, fill=LIGHT, outline="", tags="dyn")
+    for i, (nx, ny) in enumerate(_NEURAL_NODES):
+        r = 3 + 1.5 * math.sin(t * 4 + ph + i * 1.3)
+        c.create_oval(x + nx - r, y + ny - r, x + nx + r, y + ny + r, fill=SCENE_PURPLE,
+                      outline=LIGHT, tags="dyn")
+
+
+def _scene_core(c, x, y, t, ph):
+    """NOVA-Kern: leuchtender Rubin mit Ring und Schockwelle."""
+    cy = y - 24
+    pulse = (t * 1.2 + ph) % 1
+    wave = 10 + pulse * 14
+    c.create_oval(x - wave, cy - wave, x + wave, cy + wave,
+                  outline=mix_hex(ACCENT, PANEL, pulse), width=2, tags="dyn")
+    ring = 3 + 6 * abs(math.sin(t * 1.5 + ph))
+    c.create_oval(x - 17, cy - ring, x + 17, cy + ring, outline=LIGHT, tags="dyn")
+    c.create_polygon(x, cy - 13, x + 9, cy, x, cy + 13, x - 9, cy, fill=ACCENT, outline=LIGHT,
+                     width=2, tags="dyn")
+    s = 3.5 + 1.5 * math.sin(t * 5 + ph)
+    c.create_polygon(x, cy - s, x + s * 0.7, cy, x, cy + s, x - s * 0.7, cy, fill=LIGHT,
+                     outline="", tags="dyn")
+
+
+SCENE_SPRITES = {"bot": _scene_bot, "miner": _scene_miner, "rack": _scene_rack,
+                 "cluster": _scene_cluster, "quantum": _scene_quantum,
+                 "neural": _scene_neural, "core": _scene_core}
+SCENE_MONSTERS = {"bug": "Bug", "virus": "Virus", "ghost": "Glitch"}
+
+
+def _scene_bug(c, x, y, t, ph, body, hurt):
+    fill = LIGHT if hurt else body
+    flap = 4 + 5 * abs(math.sin(t * 28 + ph))
+    for side in (-1, 1):
+        c.create_oval(x + side * 2 - 6, y - 8 - flap, x + side * 2 + 6, y - 6, fill="#bff5da",
+                      outline="", tags="dyn")
+    c.create_oval(x - 11, y - 8, x + 11, y + 8, fill=fill, outline="#1c6b45", width=2, tags="dyn")
+    for i in range(3):
+        lx = x - 6 + i * 6
+        wig = math.sin(t * 14 + ph + i) * 2
+        c.create_line(lx, y + 7, lx + wig - 1, y + 13, fill="#1c6b45", width=2, tags="dyn")
+    for side in (-1, 1):
+        c.create_line(x + side * 3, y - 8, x + side * 7, y - 15, fill="#1c6b45", tags="dyn")
+        c.create_oval(x + side * 7 - 2, y - 17, x + side * 7 + 2, y - 13, fill=ACCENT, outline="",
+                      tags="dyn")
+        c.create_oval(x + side * 4 - 3, y - 4, x + side * 4 + 3, y + 2, fill=LIGHT, outline="",
+                      tags="dyn")
+        c.create_oval(x + side * 4 - 1, y - 2, x + side * 4 + 1, y + 1, fill=ACCENT, outline="",
+                      tags="dyn")
+
+
+def _scene_virus(c, x, y, t, ph, body, hurt):
+    fill = LIGHT if hurt else body
+    for k in range(8):
+        a = t * 1.6 + ph + k * math.pi / 4
+        sx, sy = x + math.cos(a) * 10, y + math.sin(a) * 10
+        ex, ey = x + math.cos(a) * 16, y + math.sin(a) * 16
+        c.create_line(sx, sy, ex, ey, fill="#5a2ea8", width=2, tags="dyn")
+        c.create_oval(ex - 2.5, ey - 2.5, ex + 2.5, ey + 2.5, fill=ACCENT, outline="", tags="dyn")
+    c.create_oval(x - 11, y - 11, x + 11, y + 11, fill=fill, outline="#5a2ea8", width=2, tags="dyn")
+    for side in (-1, 1):
+        c.create_oval(x + side * 4 - 3, y - 4, x + side * 4 + 3, y + 3, fill=LIGHT, outline="",
+                      tags="dyn")
+        c.create_oval(x + side * 4 - 1, y - 2, x + side * 4 + 1, y + 2, fill=PANEL, outline="",
+                      tags="dyn")
+        c.create_line(x + side * 8, y - 8, x + side * 1, y - 5, fill=PANEL, width=2, tags="dyn")
+
+
+def _scene_ghost(c, x, y, t, ph, body, hurt):
+    fill = LIGHT if hurt else body
+    wob = math.sin(t * 8 + ph) * 2
+    c.create_oval(x - 10, y - 13, x + 10, y + 3, fill=fill, outline="", tags="dyn")
+    c.create_polygon(x - 10, y - 5, x + 10, y - 5, x + 10, y + 11, x + 5, y + 6 + wob, x, y + 11,
+                     x - 5, y + 6 - wob, x - 10, y + 11, fill=fill, outline="", tags="dyn")
+    for side in (-1, 1):
+        c.create_oval(x + side * 4 - 2.5, y - 7, x + side * 4 + 2.5, y - 1, fill=PANEL, outline="",
+                      tags="dyn")
+    c.create_oval(x - 2, y + 1, x + 2, y + 5, fill=PANEL, outline="", tags="dyn")
+    if int(t * 1.5 + ph) % 3 == 0 and (t * 1.5 + ph) % 1 < 0.2:       # Glitch-Streifen
+        c.create_rectangle(x - 14, y - 4, x + 14, y - 1, fill=ACCENT, outline="", tags="dyn")
+        c.create_rectangle(x - 8, y + 5, x + 16, y + 7, fill=LIGHT, outline="", tags="dyn")
+
+
+SCENE_MONSTER_DRAW = {"bug": (_scene_bug, "#3fbf7f"), "virus": (_scene_virus, "#9b5cff"),
+                      "ghost": (_scene_ghost, SCENE_CYAN)}
+
+
+class IdleScene:
+    """Animierte Szene der Daten-Farm: NOVA-Held, Arbeiter je Generator, Daten-Pflanzen, Monster.
+
+    Eigenständig: bekommt nur ein Canvas und eine Kill-Funktion (Monsterart -> Bits-Belohnung).
+    """
+    X0 = 190                                  # Anfang der Arbeiter-Slots
+
+    def __init__(self, canvas, on_kill, on_sound=None):
+        self.c = canvas
+        self.on_kill = on_kill
+        self.on_sound = on_sound
+        self.owned = {}
+        self.total = 0.0
+        self.mon = []
+        self.fx = []
+        self.zap = None
+        self.swing_at = -9.0
+        self.happy_until = 0.0
+        now = time.time()
+        self.next_spawn = now + 2.5
+        self.next_auto = now + 4.0
+        self.last = now
+        self.bg_width = 0
+        self.w = 876
+        self.rng = random.Random()
+
+    # ---------- Hilfen ----------
+    def slot_xs(self, index, count):
+        slot_w = (self.w - self.X0 - 8) / len(IDLE_GENS)
+        cx = self.X0 + slot_w * (index + 0.5)
+        if count <= 1:
+            return [cx]
+        step = 30
+        return [cx + (k - (count - 1) / 2) * step for k in range(count)]
+
+    def add_fx(self, **fx):
+        self.fx.append(fx)
+        if len(self.fx) > SCENE_MAX_FX:
+            del self.fx[0]
+
+    def popup(self, text, color=SCENE_GOLD, x=None, y=None, now=None):
+        now = time.time() if now is None else now
+        self.add_fx(k="text", x=SCENE_HERO_X + self.rng.uniform(-6, 6) if x is None else x,
+                    y=SCENE_GROUND - 76 if y is None else y, vx=0, vy=-26, g=0, born=now,
+                    life=1.0, text=text, color=color)
+
+    def burst(self, x, y, color, count, now, speed=70, gravity=160):
+        for _ in range(count):
+            a = self.rng.uniform(0, math.tau)
+            v = self.rng.uniform(0.3, 1.0) * speed
+            self.add_fx(k="dot", x=x, y=y, vx=math.cos(a) * v, vy=math.sin(a) * v - 25, g=gravity,
+                        born=now, life=self.rng.uniform(0.5, 0.9), color=color, size=3)
+
+    def sound(self, kind):
+        if self.on_sound is not None:
+            self.on_sound(kind)
+
+    def swing(self, now=None):
+        self.swing_at = time.time() if now is None else now
+
+    # ---------- Monster ----------
+    def spawn_monster(self, now):
+        hp = min(6, 1 + int(math.log10(self.total + 10) // 4))
+        self.mon.append({"kind": self.rng.choice(tuple(SCENE_MONSTERS)), "x": self.w + 25.0,
+                         "y0": self.rng.uniform(26, 66), "y": 40.0,
+                         "vx": -self.rng.uniform(32, 58), "hp": hp, "maxhp": hp,
+                         "ph": self.rng.uniform(0, 6.28), "amp": self.rng.uniform(4, 10),
+                         "flash": 0.0})
+
+    def nearest_monster(self):
+        visible = [m for m in self.mon if 0 < m["x"] < self.w]
+        return min(visible, key=lambda m: m["x"]) if visible else None
+
+    def hit(self, mon, now):
+        """Hero zappt ein Monster: 1 Schaden, bei 0 LP gibt es Bits."""
+        self.zap = (SCENE_HERO_X + 6, SCENE_GROUND - 46, mon["x"], mon["y"], now + 0.16)
+        self.swing_at = now
+        mon["hp"] -= 1
+        mon["flash"] = now + 0.12
+        mon["x"] += 6
+        self.burst(mon["x"], mon["y"], LIGHT, 4, now, speed=45, gravity=0)
+        if mon["hp"] > 0:
+            self.sound("hit")
+            return
+        self.sound("kill")
+        if mon in self.mon:
+            self.mon.remove(mon)
+        amount = self.on_kill(mon["kind"])
+        self.burst(mon["x"], mon["y"], SCENE_GOLD, 12, now)
+        self.popup("+" + fmt_num(amount), SCENE_GOLD, x=max(40, min(self.w - 40, mon["x"])),
+                   y=mon["y"] - 14, now=now)
+        self.happy_until = now + 1.2
+
+    def hit_nearest(self):
+        target = self.nearest_monster()
+        if target is None:
+            return False
+        self.hit(target, time.time())
+        return True
+
+    def click(self, x, y):
+        """Mausklick auf die Szene: trifft das nächste Monster in Reichweite."""
+        best, best_d = None, 22.0
+        for mon in self.mon:
+            d = math.hypot(x - mon["x"], y - mon["y"])
+            if d <= best_d:
+                best, best_d = mon, d
+        if best is None:
+            return False
+        self.hit(best, time.time())
+        return True
+
+    # ---------- Ablauf ----------
+    def tick(self):
+        """Ein Animationsschritt: berechnen und zeichnen."""
+        c = self.c
+        now = time.time()
+        dt = min(0.1, max(0.0, now - self.last))
+        self.last = now
+        self.w = max(640, c.winfo_width())
+        if self.w != self.bg_width:
+            self.draw_background()
+        self.update(now, dt)
+        c.delete("dyn")
+        self.draw_crops(now)
+        self.draw_workers(now)
+        self.draw_hero(now)
+        self.draw_monsters(now)
+        self.draw_fx(now)
+
+    def update(self, now, dt):
+        has_workers = any(self.owned.get(g[0], 0) > 0 for g in IDLE_GENS)
+        if now >= self.next_spawn:
+            if len(self.mon) < 3:
+                self.spawn_monster(now)
+            self.next_spawn = now + self.rng.uniform(6, 12)
+        for mon in list(self.mon):
+            mon["x"] += mon["vx"] * dt
+            mon["y"] = mon["y0"] + math.sin(now * 2 + mon["ph"]) * mon["amp"]
+            if mon["x"] < -40:
+                self.mon.remove(mon)
+        if has_workers and now >= self.next_auto:           # NOVA wehrt sich auch von allein
+            target = self.nearest_monster()
+            if target is not None:
+                self.hit(target, now)
+                self.next_auto = now + 3.5
+            else:
+                self.next_auto = now + 1.0
+        for f in list(self.fx):
+            if now - f["born"] > f["life"]:
+                self.fx.remove(f)
+                continue
+            f["x"] += f["vx"] * dt
+            f["y"] += f["vy"] * dt
+            f["vy"] += f["g"] * dt
+        for index, (gid, *_rest) in enumerate(IDLE_GENS):    # Bit-Pakete steigen von den Arbeitern auf
+            count = min(3, int(self.owned.get(gid, 0)))
+            for cx in self.slot_xs(index, count) if count else ():
+                if self.rng.random() < dt * 0.45:
+                    self.add_fx(k="dot", x=cx + self.rng.uniform(-6, 6), y=SCENE_GROUND - 32,
+                                vx=self.rng.uniform(-4, 4), vy=-28, g=0, born=now, life=1.0,
+                                color=SCENE_GOLD, size=3)
+
+    # ---------- Zeichnen ----------
+    def draw_background(self):
+        c, w = self.c, self.w
+        self.bg_width = w
+        c.delete("bg")
+        gy = SCENE_GROUND
+        for i in range(8):                                   # Himmel-Verlauf
+            c.create_rectangle(0, i * gy / 8, w, (i + 1) * gy / 8 + 1,
+                               fill=mix_hex(PANEL, "#2a0d13", i / 7), outline="", tags="bg")
+        rng = random.Random(5)
+        for _ in range(34):                                  # Sterne
+            sx, sy = rng.uniform(0, w), rng.uniform(2, gy - 40)
+            c.create_rectangle(sx, sy, sx + 1.5, sy + 1.5, fill=mix_hex(PANEL, LIGHT, rng.uniform(0.2, 0.6)),
+                               outline="", tags="bg")
+        x = 0
+        while x < w:                                         # ferne Server-Türme
+            tw, th = rng.randint(16, 34), rng.randint(14, 44)
+            c.create_rectangle(x, gy - th, x + tw, gy, fill="#150809", outline="#210c10", tags="bg")
+            for _ in range(max(1, th // 9)):
+                wx, wy = x + rng.randint(2, max(3, tw - 4)), gy - rng.randint(4, th - 2)
+                c.create_rectangle(wx, wy, wx + 2, wy + 2, fill=EDGE, outline="", tags="bg")
+            x += tw + rng.randint(2, 10)
+        c.create_rectangle(0, gy, w, SCENE_H, fill="#120709", outline="", tags="bg")
+        c.create_line(0, gy, w, gy, fill=ACCENT, width=2, tags="bg")
+        for k, yy in enumerate((gy + 9, gy + 21, gy + 36)):
+            c.create_line(0, yy, w, yy, fill=mix_hex("#120709", EDGE, 0.35 + k * 0.1), tags="bg")
+        for xx in range(-60, w + 60, 46):
+            c.create_line(xx, gy, xx + (xx - w / 2) * 0.35, SCENE_H, fill=mix_hex("#120709", EDGE, 0.3),
+                          tags="bg")
+        c.tag_lower("bg")
+
+    def draw_crops(self, now):
+        stage = min(1.0, math.log10(self.total + 1) / 10.0)
+        gy = SCENE_GROUND
+        for i in range(4):
+            px = 112 + i * 18
+            height = 8 + stage * 26 + (i % 2) * 3
+            sway = math.sin(now * 1.5 + i) * (1 + stage * 2)
+            tipx, tipy = px + sway, gy - height
+            self.c.create_line(px, gy, tipx, tipy, fill="#2f8f5c", width=2, tags="dyn")
+            self.c.create_line(px, gy - height * 0.45, tipx + 7, tipy + height * 0.25, fill="#2f8f5c",
+                               width=2, tags="dyn")
+            self.c.create_line(px, gy - height * 0.6, tipx - 7, tipy + height * 0.1, fill="#2f8f5c",
+                               width=2, tags="dyn")
+            glow = 0.5 + 0.5 * math.sin(now * 3 + i * 1.7)
+            size = 2.5 + stage * 3
+            self.c.create_rectangle(tipx - size, tipy - size, tipx + size, tipy + size,
+                                    fill=mix_hex(EDGE, SCENE_GOLD, 0.4 + glow * 0.6), outline=LIGHT,
+                                    tags="dyn")
+
+    def draw_workers(self, now):
+        c, gy = self.c, SCENE_GROUND
+        for index, (gid, name, _price, _rate) in enumerate(IDLE_GENS):
+            owned = int(self.owned.get(gid, 0))
+            count = min(3, owned)
+            cx = self.slot_xs(index, 1)[0]
+            if count == 0:
+                c.create_rectangle(cx - 14, gy - 30, cx + 14, gy, outline=DIM, dash=(2, 3), tags="dyn")
+                c.create_text(cx, gy - 15, text="?", fill=DIM, font=("Consolas", 13, "bold"), tags="dyn")
+                c.create_text(cx, gy + 28, text=name, fill=DIM, font=("Consolas", 7), tags="dyn")
+                continue
+            for k, wx in enumerate(self.slot_xs(index, count)):
+                SCENE_SPRITES[gid](c, wx, gy, now, index * 1.3 + k * 2.1)
+            c.create_text(cx, gy + 14, text=f"x{owned}", fill=LIGHT, font=("Consolas", 9, "bold"), tags="dyn")
+            c.create_text(cx, gy + 28, text=name, fill=DIM, font=("Consolas", 7), tags="dyn")
+
+    def draw_hero(self, now):
+        c, gy, hx = self.c, SCENE_GROUND, SCENE_HERO_X
+        bob = math.sin(now * 2.2) * 1.2
+        happy = now < self.happy_until
+        target = self.nearest_monster()
+        look = 0
+        if target is not None:
+            look = 2 if target["x"] > hx else -2
+        c.create_oval(hx - 16, gy - 3, hx + 16, gy + 3, fill="#0a0405", outline="", tags="dyn")
+        c.create_rectangle(hx - 8, gy - 12, hx - 3, gy, fill=EDGE, outline="", tags="dyn")
+        c.create_rectangle(hx + 3, gy - 12, hx + 8, gy, fill=EDGE, outline="", tags="dyn")
+        top = gy - 34 + bob
+        c.create_polygon(hx - 8, top, hx + 12, top, hx + 12, gy - 14, hx + 8, gy - 10, hx - 12, gy - 10,
+                         hx - 12, top + 4, fill=PANEL2, outline=ACCENT, width=2, tags="dyn")
+        chest = mix_hex(EDGE, ACCENT, 0.5 + 0.5 * math.sin(now * 3))
+        c.create_rectangle(hx - 4, top + 6, hx + 4, top + 12, fill=chest, outline=LIGHT, tags="dyn")
+        c.create_rectangle(hx - 16, top + 3, hx - 12, top + 16, fill=PANEL2, outline=ACCENT, tags="dyn")
+        # Kopf
+        htop = top - 24
+        c.create_polygon(hx - 10, htop, hx + 13, htop, hx + 13, top - 2, hx + 10, top + 1, hx - 13, top + 1,
+                         hx - 13, htop + 4, fill=PANEL, outline=ACCENT, width=2, tags="dyn")
+        blink = (now % 3.6) > 3.45
+        eye_col = LIGHT if happy else ACCENT
+        for ex in (hx - 7, hx + 2):
+            ey = htop + 9
+            if happy:
+                c.create_line(ex, ey + 4, ex + 3, ey, ex + 6, ey + 4, fill=eye_col, width=2, tags="dyn")
+            else:
+                c.create_rectangle(ex + look * 0.5, ey + (3 if blink else 0), ex + 6 + look * 0.5, ey + 7,
+                                   fill=eye_col, outline="", tags="dyn")
+        c.create_line(hx, htop, hx, htop - 8, fill=LIGHT, tags="dyn")
+        tip = LIGHT if math.sin(now * 5) > 0 else ACCENT
+        c.create_oval(hx - 3, htop - 12, hx + 3, htop - 6, fill=tip, outline="", tags="dyn")
+        # Arm mit Hammer
+        p = (now - self.swing_at) / 0.4
+        if 0 <= p < 1:
+            a = 2.2 - 2.5 * (p / 0.3) if p < 0.3 else -0.3 + 0.65 * ((p - 0.3) / 0.7)
+        else:
+            a = 0.35 + math.sin(now * 2.2) * 0.08
+        sx, sy = hx + 12, top + 4
+        ax = sx + math.sin(a) * 14
+        ay = sy + math.cos(a) * 14
+        bx = sx + math.sin(a) * 25
+        by = sy + math.cos(a) * 25
+        c.create_line(sx, sy, ax, ay, fill=EDGE, width=4, tags="dyn")
+        c.create_line(ax, ay, bx, by, fill="#a77b4b", width=3, tags="dyn")
+        px, py = math.cos(a) * 5, -math.sin(a) * 5
+        c.create_line(bx - px, by - py, bx + px, by + py, fill=LIGHT, width=6, tags="dyn")
+        if 0.25 < p < 0.4:
+            c.create_oval(bx - 8, by - 8, bx + 8, by + 8, outline=SCENE_GOLD, width=2, tags="dyn")
+        if self.zap is not None:
+            x1, y1, x2, y2, until = self.zap
+            if now > until:
+                self.zap = None
+            else:
+                pts = [x1, y1]
+                for i in range(1, 6):
+                    pts += [x1 + (x2 - x1) * i / 6 + random.uniform(-6, 6),
+                            y1 + (y2 - y1) * i / 6 + random.uniform(-6, 6)]
+                pts += [x2, y2]
+                c.create_line(*pts, fill=ACCENT, width=5, tags="dyn")
+                c.create_line(*pts, fill=LIGHT, width=2, tags="dyn")
+
+    def draw_monsters(self, now):
+        c = self.c
+        for mon in self.mon:
+            draw, body = SCENE_MONSTER_DRAW[mon["kind"]]
+            draw(c, mon["x"], mon["y"], now, mon["ph"], body, now < mon["flash"])
+            if mon["maxhp"] > 1:
+                bx, by = mon["x"], mon["y"] - 24
+                c.create_rectangle(bx - 11, by, bx + 11, by + 3, fill=EDGE, outline="", tags="dyn")
+                c.create_rectangle(bx - 11, by, bx - 11 + 22 * mon["hp"] / mon["maxhp"], by + 3,
+                                   fill=ACCENT, outline="", tags="dyn")
+
+    def draw_fx(self, now):
+        c = self.c
+        for f in self.fx:
+            age = (now - f["born"]) / f["life"]
+            if f["k"] == "text":
+                color = mix_hex(f["color"], PANEL, max(0.0, age - 0.5) * 2)
+                c.create_text(f["x"], f["y"], text=f["text"], fill=color, font=("Consolas", 10, "bold"),
+                              tags="dyn")
+            else:
+                color = mix_hex(f["color"], PANEL, age * 0.8)
+                s = f["size"] * (1 - age * 0.5)
+                c.create_rectangle(f["x"], f["y"], f["x"] + s, f["y"] + s, fill=color, outline="",
+                                   tags="dyn")
 
 
 # ================= Werkzeuge: Timer, Erinnerungen, Autoclicker =================
@@ -867,10 +1416,333 @@ def parse_reminder(text, now=None):
     return (due, label, repeat) if label else None
 
 
+RPG_MONSTERS = ("Nano-Schleim", "Schuss-Drohne", "Glitch-Geist", "Cyber-Hund", "Firewall-Mech",
+                "Virus-Drache")
+RPG_KEYS = {"lvl": (1, 999, 1), "xp": (0, 10**7, 0), "gold": (0, 10**9, 0), "floor": (1, 9999, 1),
+            "best": (1, 9999, 1), "wins": (0, 10**7, 0), "potions": (0, 99, 2), "wpn": (0, 5, 0),
+            "arm": (0, 5, 0), "bombs": (0, 99, 0), "hearts": (0, 99, 0), "flags": (0, 65535, 0),
+            "seed": (1, 2**31 - 1, 1)}
+
+
+def default_rpg():
+    return {"lvl": 1, "xp": 0, "hp": 50.0, "gold": 0, "floor": 1, "best": 1, "wins": 0,
+            "potions": 2, "wpn": 0, "arm": 0, "bombs": 0, "hearts": 0, "flags": 0,
+            "seed": random.randint(1, 999999), "imp": [], "t": time.time()}
+
+
+def sanitize_rpg(raw):
+    base = default_rpg()
+    if not isinstance(raw, dict):
+        return base
+    for key, (lo, hi, default) in RPG_KEYS.items():
+        try:
+            base[key] = min(hi, max(lo, int(raw.get(key, default))))
+        except (TypeError, ValueError, OverflowError):
+            base[key] = default
+    try:
+        hp = float(raw.get("hp", base["hp"]))
+        base["hp"] = hp if math.isfinite(hp) and hp > 0 else 1.0
+    except (TypeError, ValueError):
+        pass
+    try:
+        t = float(raw.get("t", base["t"]))
+        base["t"] = min(time.time(), t) if math.isfinite(t) and t > 0 else time.time()
+    except (TypeError, ValueError):
+        pass
+    if not isinstance(raw.get("seed"), int) or raw.get("seed", 0) < 1:
+        base["seed"] = random.randint(1, 999999)
+    imp = raw.get("imp")
+    base["imp"] = []
+    if isinstance(imp, list):
+        for i in imp:
+            if isinstance(i, str) and i in RPG_IMPLANTS and i not in base["imp"]:
+                base["imp"].append(i)
+    base["best"] = max(base["best"], base["floor"])
+    return base
+
+
+# ---- Zelda-artiges RPG: Weltdaten (reine Funktionen, ohne Fenster) ----
+RPG_T = 32                                   # Kachelgröße in Pixeln
+RPG_COLS, RPG_ROWS = 14, 9                   # Kacheln je Bildschirm
+RPG_PW, RPG_PH = RPG_COLS * RPG_T, RPG_ROWS * RPG_T      # 448 x 288
+RPG_HUD = 44                                 # Höhe der Anzeigeleiste oben
+RPG_SOLID = frozenset("TRWBHP#XLZs")
+RPG_DIRS = ((0, -1), (1, 0), (0, 1), (-1, 0))
+RPG_GAPS = {(-1, 0): [(0, r) for r in (3, 4, 5)],
+            (1, 0): [(RPG_COLS - 1, r) for r in (3, 4, 5)],
+            (0, -1): [(c, 0) for c in (6, 7)],
+            (0, 1): [(c, RPG_ROWS - 1) for c in (6, 7)]}
+# Paletten der Spielfläche (Fensterrahmen bleibt rot/schwarz); hier lässt sich alles umfärben
+RPG_PAL = {
+    "g1": "#12101c", "g2": "#161326", "path": "#241f3d", "path_l": "#2f2a52", "cyan": "#27e0ff",
+    "mag": "#ff2bd6", "yel": "#ffe14a", "red": "#ff2e43", "grn": "#39ff7a", "dark": "#0a0914",
+    "wall": "#2a2442", "roof": "#1b1530", "metal": "#2b2a3a", "metal_l": "#454462",
+    "water": "#06324a", "water_l": "#27e0ff", "door": "#07060d",
+    "ifloor": "#14111f", "ifloor_l": "#1c1730", "iwall": "#1a1626", "iwall_l": "#2d2745",
+    "gold": "#ffe14a", "gem_g": "#27e0ff", "gem_b": "#ff2bd6", "gem_r": "#ffe14a",
+}
+RPG_DTHEMES = (      # Verlies-Stile: Wand, Wand hell, Boden, Neon
+    {"name": "Neon-Slums", "wall": "#2a1245", "wall_l": "#431a6e", "floor": "#0e0a16", "floor_l": "#150f22", "neon": "#ff2bd6"},
+    {"name": "Konzern-Turm", "wall": "#0f2a3d", "wall_l": "#17445f", "floor": "#090f16", "floor_l": "#0e1823", "neon": "#27e0ff"},
+    {"name": "Datengrab", "wall": "#2d2a0f", "wall_l": "#4a4515", "floor": "#0f0e08", "floor_l": "#18160c", "neon": "#ffe14a"},
+    {"name": "Rotlicht", "wall": "#3a0d1a", "wall_l": "#5e1628", "floor": "#120709", "floor_l": "#1d0b0f", "neon": "#ff2e43"},
+)
+RPG_IMPLANTS = {
+    "blade": ("Mono-Klinge", "+30% Schwertschaden"),
+    "crit": ("Krit-Prozessor", "15% Chance auf dreifachen Schaden"),
+    "vamp": ("Vampir-Chip", "Jeder Kill heilt 5 HP"),
+    "mag": ("Magnet-Arm", "Zieht Drops aus der Ferne an"),
+    "luck": ("Glücks-Chip", "Mehr Drops, +50% Credits"),
+    "thorn": ("Dornen-Haut", "Gegner nehmen Schaden, wenn sie dich treffen"),
+    "aegis": ("Aegis-Matrix", "Der erste Treffer pro Raum wird geblockt"),
+    "emp": ("EMP-Spule", "EMP-Bomben mit größerer Reichweite"),
+    "beam": ("Strahl-Kern", "Schwertstrahl schon ab 60% Herzen"),
+    "titan": ("Titan-Rahmen", "+2 Herzen Maximum"),
+    "servo": ("Servo-Beine", "+20% Lauftempo"),
+}
+RPG_MUTATORS = {
+    "surge": ("ÜBERSPANNUNG", "Gegner schneller, +25% Credits"),
+    "elite": ("ELITE-JAGD", "In jedem Raum lauert ein Elite-Gegner"),
+    "glass": ("GLASKANONE", "Du teilst und nimmst 50% mehr Schaden"),
+    "lean": ("SPARPROGRAMM", "Weniger Gegner, doppelte Credits, keine Herzen"),
+}
+def rpg_mix(a, b, t):
+    """Mischt zwei Hex-Farben (t=0 -> a, t=1 -> b)."""
+    pa = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    pb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(x + (y - x) * t) for x, y in zip(pa, pb))
+
+
+RPG_HEART = (".XX.XX.", "XXXXXXX", "XXXXXXX", ".XXXXX.", "..XXX..", "...X...")
+RPG_HEART_RUNS = []
+for _ry, _row in enumerate(RPG_HEART):
+    _c = 0
+    while _c < 7:
+        if _row[_c] == "X":
+            _s = _c
+            while _c < 7 and _row[_c] == "X":
+                _c += 1
+            RPG_HEART_RUNS.append((_ry, _s, _c))
+        else:
+            _c += 1
+
+RPG_TYPES = {
+    "slime":  {"name": "Nano-Schleim", "r": 10, "hp": 0.8, "atk": 0.9, "spd": 90},
+    "octo":   {"name": "Schuss-Drohne", "r": 11, "hp": 1.0, "atk": 1.0, "spd": 50},
+    "bat":    {"name": "Glitch-Geist", "r": 9, "hp": 0.35, "atk": 0.8, "spd": 100, "fly": True},
+    "wolf":   {"name": "Cyber-Hund", "r": 12, "hp": 1.2, "atk": 1.2, "spd": 55},
+    "golem":  {"name": "Firewall-Mech", "r": 13, "hp": 1.8, "atk": 1.4, "spd": 42, "shield": True},
+    "drache": {"name": "Virus-Drache", "r": 24, "hp": 5.0, "atk": 1.5, "spd": 60, "boss": True, "fly": True},
+    "wurm":   {"name": "Kernel-Wurm", "r": 17, "hp": 4.5, "atk": 1.4, "spd": 125, "boss": True, "fly": True},
+    "koloss": {"name": "ICE-Koloss", "r": 26, "hp": 6.0, "atk": 1.8, "spd": 48, "boss": True},
+}
+RPG_BOSSES = ("drache", "wurm", "koloss")
+
+
+def rpg_pick_types(f, rng, n):
+    pool = ["slime", "octo", "bat"]
+    if f >= 3:
+        pool.append("wolf")
+    if f >= 5:
+        pool += ["golem", "wolf"]
+    return [rng.choice(pool) for _ in range(n)]
+
+
+def rpg_blank(fill=".", border="#", gaps=()):
+    t = [[fill] * RPG_COLS for _ in range(RPG_ROWS)]
+    for c in range(RPG_COLS):
+        t[0][c] = t[RPG_ROWS - 1][c] = border
+    for r in range(RPG_ROWS):
+        t[r][0] = t[r][RPG_COLS - 1] = border
+    for d in gaps:
+        for c, r in RPG_GAPS[d]:
+            t[r][c] = fill
+    return t
+
+
+def rpg_building(t, c0, r0, door=None, ch="H", w=3, h=2):
+    for r in range(r0, r0 + h):
+        for c in range(c0, c0 + w):
+            t[r][c] = ch
+    if door:
+        t[r0 + h - 1][c0 + w // 2] = door
+
+
+RPG_VILLAGER_LINES = (
+    "Such das Netz-Gate. Drinnen: Schlüssel finden, Boss hacken!",
+    "Schuss-Drohnen feuern nur geradeaus. Weich seitlich aus!",
+    "Firewall-Mechs blocken von vorn. Greif sie von der Seite an!",
+    "Mit vollen Herzen schießt deine Klinge einen Strahl.",
+    "Manche Betonblöcke sind brüchig... EMP-Bomben helfen.",
+    "Kabelsalat kannst du kappen. Manchmal funkelt was darin.",
+    "Nach jedem Boss würfelt sich das Netz neu. Nichts bleibt, wo es war.",
+    "Implantate stapeln sich. Bau dir einen eigenen Stil.",
+)
+
+
+def rpg_roles(seed):
+    """Wo Dorf, Netz-Gate, Netrunner-Höhle und Geheimversteck liegen, hängt vom Welten-Seed ab."""
+    rng = random.Random(seed * 2654435761 % (2 ** 32))
+    cells = [(x, y) for x in range(3) for y in range(3)]
+    rng.shuffle(cells)
+    return {"village": cells[0], "dungeon": cells[1], "oldman": cells[2], "secret": cells[3]}
+
+
+def rpg_gen_over(rx, ry, seed=1):
+    """Ein Oberwelt-Bildschirm (3x3 Bildschirme). Rollen und Deko hängen vom Seed ab."""
+    roles = rpg_roles(seed)
+    role = next((k for k, v in roles.items() if v == (rx, ry)), None)
+    rng = random.Random(seed * 131 + rx * 977 + ry * 313 + 5)
+    gaps = [d for d in RPG_GAPS if 0 <= rx + d[0] < 3 and 0 <= ry + d[1] < 3]
+    t = rpg_blank(".", "T", gaps)
+    info = {"doors": {}, "signs": {}, "npcs": [], "enemies": True, "role": role}
+    for d in gaps:                                   # Wege zu den Ausgängen
+        if d[0]:
+            for c in (range(0, 7) if d[0] < 0 else range(7, RPG_COLS)):
+                t[4][c] = ","
+        else:
+            for r in (range(0, 4) if d[1] < 0 else range(5, RPG_ROWS)):
+                t[r][6] = t[r][7] = ","
+    t[4][6] = t[4][7] = ","
+    if role != "village":                            # Natur (das Dorf bleibt aufgeräumt)
+        for _ in range(rng.randint(5, 8)):
+            kind = rng.choice("TTRRW")
+            w, h = rng.randint(1, 3), rng.randint(1, 2)
+            c0, r0 = rng.randint(1, RPG_COLS - 1 - w), rng.randint(1, RPG_ROWS - 1 - h)
+            for r in range(r0, r0 + h):
+                for c in range(c0, c0 + w):
+                    if not (3 <= r <= 5 or c in (6, 7)) and t[r][c] == ".":
+                        t[r][c] = kind
+        for _ in range(rng.randint(4, 8)):
+            c, r = rng.randint(1, RPG_COLS - 2), rng.randint(1, RPG_ROWS - 2)
+            if t[r][c] == ".":
+                t[r][c] = "B"
+    c0 = rng.choice((2, 9))
+    sc = 1 if c0 == 2 else 12
+    if role == "village":                            # Startbild mit Schieber-Laden
+        rpg_building(t, 2, 1, "E")
+        info["doors"][(3, 2)] = "shop"
+        rpg_building(t, 9, 1)
+        for c, r in ((1, 6), (12, 6), (1, 7)):
+            t[r][c] = "B"
+        t[6][4] = "s"
+        info["signs"][(4, 6)] = ("SEKTOR 0 · Schieber-Laden links oben. LEERTASTE = Klinge / Sprechen, "
+                                 "B = EMP-Bombe, Q = Nano-Kit.")
+        info["npcs"].append({"x": 10.5 * RPG_T, "y": 6.5 * RPG_T, "name": "Straßenkind", "kind": "villager"})
+        info["enemies"] = False
+    elif role == "dungeon":                          # Netz-Gate
+        rpg_building(t, c0, 1, "D", ch="R")
+        t[2][sc] = "s"
+        info["signs"][(sc, 2)] = "NETZ-GATE · Zutritt auf eigene Gefahr. Boss am Ende, Schlüssel unterwegs."
+    elif role == "oldman":                           # Höhle des alten Netrunners
+        rpg_building(t, c0, 1, "E", ch="R")
+        info["doors"][(c0 + 1, 2)] = "oldman"
+    elif role == "secret":                           # Geheimversteck hinter brüchigem Beton
+        rpg_building(t, c0, 1, "X", ch="R")
+        info["doors"][(c0 + 1, 2)] = "secret"
+    for c in range(RPG_COLS):                        # Platz vor Türen und Gate freihalten
+        for r in range(RPG_ROWS - 1):
+            if t[r][c] in "DEX" and t[r + 1][c] == "B":
+                t[r + 1][c] = "."
+    return t, info
+
+
+def rpg_gen_interior(kind):
+    t = rpg_blank(".", "#", ())
+    t[RPG_ROWS - 1][6] = t[RPG_ROWS - 1][7] = "F"
+    if kind == "shop":
+        for c, r in ((1, 1), (12, 1), (1, 7), (12, 7)):
+            t[r][c] = "P"
+    return t
+
+
+def rpg_gen_dungeon(f, seed=1):
+    """Verlies Nr. f: 3x3 Räume, fester Aufbau je Nummer, Boss hinter verschlossener Tür."""
+    rng = random.Random(f * 7919 + 1013 + seed * 31)
+    start = (1, 2)
+    seen, stack, edges = {start}, [start], set()
+    while stack:
+        x, y = stack[-1]
+        nb = [(x + dx, y + dy) for dx, dy in RPG_DIRS
+              if 0 <= x + dx < 3 and 0 <= y + dy < 3 and (x + dx, y + dy) not in seen]
+        if not nb:
+            stack.pop()
+            continue
+        n = rng.choice(nb)
+        seen.add(n)
+        edges.add(frozenset(((x, y), n)))
+        stack.append(n)
+
+    def bfs(es):
+        dist, q = {start: 0}, [start]
+        for cur in q:
+            for dx, dy in RPG_DIRS:
+                n = (cur[0] + dx, cur[1] + dy)
+                if n not in dist and frozenset((cur, n)) in es:
+                    dist[n] = dist[cur] + 1
+                    q.append(n)
+        return dist
+
+    dist = bfs(edges)
+    leaves = [p for p in dist if p != start and sum(1 for e in edges if p in e) == 1]
+    boss = max(leaves, key=lambda p: (dist[p], rng.random()))
+    extra = [frozenset((a, b)) for a in dist for b in dist
+             if a < b and abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1
+             and frozenset((a, b)) not in edges and boss not in (a, b)]
+    rng.shuffle(extra)
+    edges |= set(extra[:2])
+    dist = bfs(edges)
+    lock = next(e for e in edges if boss in e)
+    rest = {p: d for p, d in dist.items() if p not in (boss, start)}
+    keyroom = max(rest, key=lambda p: (rest[p], rng.random()))
+    others = [p for p in rest if p != keyroom]
+    bombroom = rng.choice(others) if others and rng.random() < 0.85 else None
+    return {"f": f, "seed": seed, "start": start, "boss": boss, "keyroom": keyroom, "bombroom": bombroom,
+            "bonus": rng.choice(("bombs", "imp", "terminal")),
+            "mut": rng.choice((None, None, "surge", "elite", "glass", "lean")),
+            "theme": rng.randrange(len(RPG_DTHEMES)),
+            "edges": edges, "locks": {lock}, "cleared": set(), "visited": set(),
+            "opened": set(), "boss_done": False}
+
+
+RPG_PILLARS = (
+    (),
+    ((3, 2), (10, 2), (3, 6), (10, 6)),
+    ((6, 4), (7, 4)),
+    ((4, 2), (9, 2), (4, 6), (9, 6), (2, 4), (11, 4)),
+    ((3, 3), (4, 3), (9, 5), (10, 5)),
+    ((5, 2), (8, 2), (5, 6), (8, 6)),
+)
+
+
+def rpg_dun_tiles(dun, pos):
+    x, y = pos
+    gaps = [d for d in RPG_DIRS if frozenset((pos, (x + d[0], y + d[1]))) in dun["edges"]]
+    t = rpg_blank(".", "#", gaps)
+    for d in gaps:
+        if frozenset((pos, (x + d[0], y + d[1]))) in dun["locks"]:
+            for c, r in RPG_GAPS[d]:
+                t[r][c] = "L"
+    rng = random.Random(dun["f"] * 104729 + x * 31 + y * 7 + dun["seed"])
+    pillars = rng.choice(RPG_PILLARS)
+    if pos == dun["start"]:
+        t[RPG_ROWS - 1][6] = t[RPG_ROWS - 1][7] = "F"
+        pillars = ()
+    elif pos == dun["boss"]:
+        pillars = ((2, 2), (11, 2), (2, 6), (11, 6))
+    for c, r in pillars:
+        t[r][c] = "P"
+    return t, gaps
+
+
 def sanitize_timer(raw):
     base = {"end": 0.0, "total": 0.0, "label": ""}
     if not isinstance(raw, dict):
         return base
+    pomo = raw.get("pomo")
+    pomo = pomo if isinstance(pomo, int) and not isinstance(pomo, bool) and 1 <= pomo <= 8 else 0
+    if pomo and raw.get("wait") is True:      # Pomodoro wartet auf Klick
+        return {"end": 0.0, "total": 0.0, "label": "Pomodoro", "pomo": pomo, "wait": True}
     try:
         end, total = float(raw.get("end", 0.0)), float(raw.get("total", 0.0))
     except (TypeError, ValueError):
@@ -879,7 +1751,7 @@ def sanitize_timer(raw):
         return base
     label = raw.get("label", "")
     label = re.sub(r"[\x00-\x1f\x7f]", "", label).strip()[:20] if isinstance(label, str) else ""
-    return {"end": end, "total": min(total, 86400.0), "label": label or "Timer"}
+    return {"end": end, "total": min(total, 86400.0), "label": label or "Timer", "pomo": pomo}
 
 
 def sanitize_reminders(raw):
@@ -935,7 +1807,13 @@ def sanitize_autoclicker(raw):
 
 
 # ================= Soundeffekte =================
+SFX_PAD_LEAD = 0.06     # Stille vor dem Ton (Audiogerät/Spotify-Mixer "wacht auf", sonst wird der Anfang verschluckt)
+SFX_PAD_TAIL = 0.12     # Stille nach dem Ton (sonst wird das Ende abgeschnitten)
+
+
 def _sfx_wav(samples):
+    samples = ([0.0] * int(SFX_RATE * SFX_PAD_LEAD) + list(samples)
+               + [0.0] * int(SFX_RATE * SFX_PAD_TAIL))
     frames = b"".join(struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32767)) for v in samples)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -944,6 +1822,108 @@ def _sfx_wav(samples):
         w.setframerate(SFX_RATE)
         w.writeframes(frames)
     return buf.getvalue()
+
+
+def synth_rpg_sfx(kind):
+    """Synthetische Geräusche für das RPG (Samples zwischen -1 und 1, kurz und leise)."""
+    rnd = random.Random(11)
+    total = RPG_SFX_META[kind][1] + 0.03
+    buf = [0.0] * int(SFX_RATE * total)
+
+    def tone(t0, dur, f0, f1, amp, decay, wave="sin"):
+        ph, start = 0.0, int(SFX_RATE * t0)
+        for i in range(int(SFX_RATE * dur)):
+            if start + i >= len(buf):
+                break
+            t = i / SFX_RATE
+            ph += 2 * math.pi * (f0 + (f1 - f0) * t / dur) / SFX_RATE
+            if wave == "sq":
+                s = 1.0 if math.sin(ph) > 0 else -1.0
+            elif wave == "saw":
+                s = 2.0 * ((ph / (2 * math.pi)) % 1.0) - 1.0
+            else:
+                s = math.sin(ph)
+            buf[start + i] += amp * s * math.exp(-t * decay)
+
+    def noise(t0, dur, amp, decay, lp0, lp1=None, shape=False):
+        y, start = 0.0, int(SFX_RATE * t0)
+        lp1 = lp0 if lp1 is None else lp1
+        for i in range(int(SFX_RATE * dur)):
+            if start + i >= len(buf):
+                break
+            p = i / max(1, SFX_RATE * dur)
+            y += (lp0 + (lp1 - lp0) * p) * (rnd.uniform(-1, 1) - y)
+            env = math.sin(math.pi * p) if shape else 1.0
+            buf[start + i] += amp * y * env * math.exp(-(i / SFX_RATE) * decay)
+
+    if kind == "rpg_swing":
+        noise(0, 0.11, 0.55, 6, 0.15, 0.55, True); tone(0, 0.1, 700, 340, 0.04, 20, "sq")
+    elif kind == "rpg_beam":
+        tone(0, 0.17, 1400, 500, 0.12, 8, "saw"); tone(0, 0.17, 2000, 900, 0.06, 10)
+    elif kind == "rpg_hurt":
+        tone(0, 0.19, 230, 100, 0.2, 12, "sq"); noise(0, 0.08, 0.35, 40, 0.5)
+    elif kind == "rpg_death":
+        tone(0, 0.9, 420, 35, 0.22, 2.5, "saw"); noise(0, 0.5, 0.2, 5, 0.3, 0.05)
+        for i in range(len(buf)):
+            if (i // 900) % 2:
+                buf[i] *= 0.45
+    elif kind == "rpg_gem":
+        tone(0, 0.06, 1568, 1568, 0.14, 25); tone(0.06, 0.1, 2093, 2093, 0.14, 22)
+    elif kind == "rpg_heart":
+        tone(0, 0.12, 660, 660, 0.15, 10); tone(0.1, 0.2, 880, 880, 0.15, 8); tone(0.1, 0.2, 1320, 1320, 0.04, 9)
+    elif kind == "rpg_hc":
+        for k, f in enumerate((523, 659, 784, 1047, 1319)):
+            tone(k * 0.09, 0.14, f, f, 0.13, 6)
+        for f in (1047, 1319, 1568):
+            tone(0.45, 0.25, f, f, 0.07, 5)
+    elif kind == "rpg_boom":
+        tone(0, 0.5, 95, 30, 0.38, 7); noise(0, 0.4, 0.38, 9, 0.2); noise(0, 0.2, 0.12, 35, 0.8)
+    elif kind == "rpg_fuse":
+        tone(0, 0.05, 500, 900, 0.14, 40, "sq"); noise(0, 0.05, 0.1, 50, 0.6)
+    elif kind == "rpg_shot":
+        tone(0, 0.08, 900, 400, 0.07, 30, "sq")
+    elif kind == "rpg_fire":
+        noise(0, 0.33, 0.45, 4, 0.1, 0.4, True); tone(0, 0.33, 160, 90, 0.1, 6, "saw")
+    elif kind == "rpg_door_shut":
+        noise(0, 0.08, 0.2, 30, 0.5); tone(0, 0.28, 300, 80, 0.3, 14); tone(0.02, 0.15, 1800, 600, 0.05, 20, "sq")
+    elif kind == "rpg_door_open":
+        tone(0, 0.27, 120, 420, 0.18, 8, "sq"); noise(0.18, 0.08, 0.2, 30, 0.5)
+    elif kind == "rpg_unlock":
+        tone(0, 0.03, 1800, 1800, 0.2, 120); tone(0.07, 0.03, 1800, 1800, 0.2, 120); tone(0.12, 0.12, 1568, 1568, 0.15, 14)
+    elif kind == "rpg_locked":
+        tone(0, 0.07, 150, 150, 0.16, 10, "sq"); tone(0.09, 0.07, 150, 150, 0.16, 10, "sq")
+    elif kind == "rpg_chest":
+        for k, f in enumerate((392, 523, 659, 784)):
+            tone(k * 0.08, 0.14, f, f, 0.12, 9)
+        tone(0.3, 0.14, 2093, 2093, 0.07, 12)
+    elif kind == "rpg_cut":
+        noise(0, 0.1, 0.45, 35, 0.6); tone(0, 0.1, 1200, 2200, 0.05, 30)
+    elif kind == "rpg_scroll":
+        noise(0, 0.28, 0.3, 3, 0.08, 0.3, True); tone(0, 0.28, 200, 260, 0.04, 4)
+    elif kind == "rpg_portal":
+        n = int(SFX_RATE * 0.42)
+        ph = 0.0
+        for i in range(n):
+            p = i / n
+            ph += 2 * math.pi * (300 + 900 * p) / SFX_RATE
+            buf[i] += 0.18 * math.sin(ph) * math.sin(math.pi * p)
+        tone(0, 0.4, 600, 2400, 0.05, 3)
+    elif kind == "rpg_blip":
+        tone(0, 0.035, 880, 880, 0.07, 70, "sq")
+    elif kind == "rpg_potion":
+        for k, f in enumerate((600, 800, 1000)):
+            tone(k * 0.09, 0.09, f, f * 1.15, 0.12, 14)
+    elif kind == "rpg_boss":
+        tone(0, 1.0, 55, 50, 0.3, 1.8, "saw"); noise(0, 0.9, 0.15, 1.5, 0.05)
+        tone(0, 0.3, 70, 40, 0.3, 12); tone(0.4, 0.3, 70, 40, 0.3, 12)
+    elif kind == "rpg_victory":
+        for k, f in enumerate((523, 659, 784, 1047)):
+            tone(k * 0.12, 0.2, f, f, 0.13, 7)
+        for f in (523, 659, 784, 1047):
+            tone(0.5, 0.35, f, f, 0.07, 3.5)
+    elif kind == "rpg_aegis":
+        tone(0, 0.24, 1760, 1760, 0.1, 12); tone(0, 0.24, 2349, 2349, 0.06, 12); tone(0, 0.2, 800, 2600, 0.06, 6)
+    return buf
 
 
 def synth_sfx(kind):
@@ -994,6 +1974,46 @@ def synth_sfx(kind):
                        + 0.5 * y * math.exp(-t * 14)
                        + 0.14 * pop
                        + 0.35 * rnd.uniform(-1, 1) * math.exp(-t * 90))
+    elif kind == "hack":                           # elektrisches Zappen
+        phase = 0.0
+        for i in range(count(0.05)):
+            t = i / SFX_RATE
+            phase += 2 * math.pi * (200 + 900 * math.exp(-t * 30)) / SFX_RATE
+            out.append(0.07 * (1.0 if math.sin(phase) > 0 else -1.0) * math.exp(-t * 45)
+                       + 0.04 * rnd.uniform(-1, 1) * math.exp(-t * 60))
+    elif kind == "hit":                            # Treffer am Monster
+        phase = 0.0
+        for i in range(count(0.07)):
+            t = i / SFX_RATE
+            phase += 2 * math.pi * (150 + 450 * math.exp(-t * 25)) / SFX_RATE
+            out.append(0.24 * math.sin(phase) * math.exp(-t * 35)
+                       + 0.1 * rnd.uniform(-1, 1) * math.exp(-t * 120))
+    elif kind == "kill":                           # Knall + Münz-Doppelton
+        for i in range(count(0.36)):
+            t = i / SFX_RATE
+            v = 0.3 * rnd.uniform(-1, 1) * math.exp(-t * 80)
+            for start, freq in ((0.04, 988), (0.12, 1319)):
+                if t >= start:
+                    v += 0.15 * (math.sin(2 * math.pi * freq * (t - start))
+                                 + 0.4 * math.sin(2 * math.pi * freq * 2 * (t - start))) * math.exp(-(t - start) * 11)
+            out.append(v)
+    elif kind == "buy":                            # kurzes Münz-Klingeln
+        for i in range(count(0.18)):
+            t = i / SFX_RATE
+            out.append(0.14 * (math.sin(2 * math.pi * 1568 * t) + 0.5 * math.sin(2 * math.pi * 2349 * t))
+                       * math.exp(-t * 15))
+    elif kind == "upgrade":                        # aufsteigende Tonfolge
+        for n, f in enumerate((523, 659, 784, 1047)):
+            for i in range(count(0.08)):
+                t = i / SFX_RATE
+                out.append(0.14 * math.sin(2 * math.pi * f * t) * math.exp(-t * 10))
+    elif kind == "reboot":                         # steigender Sweep
+        phase = 0.0
+        dur = 0.6
+        for i in range(count(dur)):
+            t = i / SFX_RATE
+            phase += 2 * math.pi * (200 + 1200 * (t / dur) ** 2) / SFX_RATE
+            out.append(0.2 * math.sin(phase) * math.sin(math.pi * t / dur))
     elif kind == "tick":
         for i in range(count(0.03)):
             t = i / SFX_RATE
@@ -1003,6 +2023,8 @@ def synth_sfx(kind):
             for i in range(count(0.14)):
                 t = i / SFX_RATE
                 out.append(0.16 * math.sin(2 * math.pi * f * t) * math.exp(-t * 9))
+    elif kind in RPG_NEW_SFX:
+        out = synth_rpg_sfx(kind)
     else:
         return b""
     fade = min(len(out) // 4, 120)                 # kurz ein-/ausblenden gegen Knacken
@@ -1049,9 +2071,10 @@ def default_state():
             "mini_manual": False, "walking": True, "voice_enabled": False,
             "phone_mode": False, "phone_image": "", "phone_talk_image": "",
             "living_mode": False, "sys_monitor": False, "synth_voice": True,
-            "controlled_apps": [], "fav_apps": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False,
+            "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False,
             "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
             "idle": default_idle(), "timer": {"end": 0.0, "total": 0.0, "label": ""},
+            "rpg": default_rpg(),
             "reminders": [], "autoclicker": default_autoclicker(),
             "ai_enabled": False, "ai_provider": "gemini",
             "ai_model": os.environ.get("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL,
@@ -1151,6 +2174,14 @@ def sanitize_state(state):
         for path in apps
         if isinstance(path, str) and path.lower().endswith(".exe")
     ))[:6]
+    sites = state.get("sites", [])
+    state["sites"] = [
+        {"name": re.sub(r"[\x00-\x1f\x7f]", "", x["name"]).strip()[:40],
+         "url": re.sub(r"[\x00-\x1f\x7f\s]", "", x["url"])[:2048]}
+        for x in (sites if isinstance(sites, list) else [])
+        if isinstance(x, dict) and isinstance(x.get("name"), str) and isinstance(x.get("url"), str)
+        and re.match(r"https?://", x["url"], re.I)
+    ][:12]
     notes = state.get("notes", "")
     state["notes"] = notes[:20000] if isinstance(notes, str) else ""
     favs = state.get("fav_apps", [])
@@ -1167,6 +2198,7 @@ def sanitize_state(state):
     state["ai_model"] = model or OLLAMA_DEFAULT_MODEL
     state["idle"] = sanitize_idle(state.get("idle"))
     state["timer"] = sanitize_timer(state.get("timer"))
+    state["rpg"] = sanitize_rpg(state.get("rpg"))
     state["reminders"] = sanitize_reminders(state.get("reminders"))
     state["autoclicker"] = sanitize_autoclicker(state.get("autoclicker"))
     return state
@@ -1427,6 +2459,21 @@ class NovaToplevel(tk.Toplevel):
         else:
             self.destroy()
 
+    def _virtual_screen(self):
+        """Ganzer virtueller Desktop über alle Bildschirme: (links, oben, rechts, unten)."""
+        try:
+            if IS_WIN:
+                vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+                vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+            else:
+                vx, vy = self.winfo_vrootx(), self.winfo_vrooty()
+                vw, vh = self.winfo_vrootwidth(), self.winfo_vrootheight()
+            if vw > 0 and vh > 0:
+                return vx, vy, vx + vw, vy + vh
+        except (tk.TclError, OSError, AttributeError):
+            pass
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
     # ---------- Anzeigen / Platzieren ----------
     def _show(self):
         try:
@@ -1449,8 +2496,9 @@ class NovaToplevel(tk.Toplevel):
                             aw, ah = anchor.winfo_width(), anchor.winfo_height()
                     except tk.TclError:
                         pass
-                x = max(0, min(ax + (aw - width) // 2, screen_w - width))
-                y = max(0, min(ay + (ah - height) // 2, screen_h - height))
+                vl, vt, vr, vb = self._virtual_screen()
+                x = max(vl, min(ax + (aw - width) // 2, vr - width))
+                y = max(vt, min(ay + (ah - height) // 2, vb - height))
                 super().geometry(f"+{x}+{y}")
                 self._placed = True
             self.attributes("-alpha", 1.0)
@@ -1506,9 +2554,9 @@ class NovaToplevel(tk.Toplevel):
     def _bar_motion(self, event):
         if self._drag is None:
             return
-        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
-        x = min(max(event.x_root - self._drag[0], 120 - self.winfo_width()), screen_w - 120)
-        y = min(max(event.y_root - self._drag[1], 0), screen_h - self.TITLE_H)
+        vl, vt, vr, vb = self._virtual_screen()          # alle Bildschirme, auch links/oberhalb des Hauptschirms
+        x = min(max(event.x_root - self._drag[0], vl + 120 - self.winfo_width()), vr - 120)
+        y = min(max(event.y_root - self._drag[1], vt), vb - self.TITLE_H)
         super().geometry(f"+{x}+{y}")
         self._placed = True
 
@@ -2040,8 +3088,13 @@ class Nova:
         self.idle_away = max(0.0, time.time() - float(self.s["last"]))
         self.idle_last = time.time()
         self.idle_window = None
+        self.rpg_window = None
+        self.rpg_mon = None
         self.idle_ui = {}
         self.idle_after_id = None
+        self.idle_scene = None
+        self.idle_anim_id = None
+        self.idle_sfx_last = {}
         self.idle_amount = 1
         self.idle_status = ""
         self.prompt = None                 # "timer" / "reminder": Eingabefeld ist offen
@@ -2261,6 +3314,8 @@ class Nova:
         self.burst_parts, self.burst_blood, self.burst_shards_list = [], [], []
         self.sfx_dir = None
         self.sfx_files = {}
+        self.sfx_locks = {}
+        self.sfx_dir_lock = threading.Lock()
         self.sfx_last = -99.0
         self.sfx_last_kind = {}
         self.root.after(1500, self.sfx_prewarm)  # WAVs vorab erzeugen
@@ -3010,7 +4065,8 @@ class Nova:
                  "on": bool(self.s["reminders"])},
                 {"label": "Auto-\nclicker", "icon": "🖱️", "action": self.open_ac_window,
                  "on": self.ac_running},
-                {"label": "Browser", "icon": "🌐", "action": lambda: self.start_prompt("browse")},
+                {"label": "Browser", "icon": "🌐", "action": lambda: self.start_prompt("browse"),
+                 "orbit": list(self.s["sites"])},
                 {"label": "Notizblock", "icon": "📝", "action": self.open_notes,
                  "on": bool(self.s.get("notes"))},
                 {"label": "Zurück", "icon": "↩️", "action": go("main")},
@@ -3020,8 +4076,8 @@ class Nova:
             return "TIMER", [
                 {"label": "5 Min", "icon": "⏱️", "action": lambda: self.start_timer(300)},
                 {"label": "15 Min", "icon": "⏳", "action": lambda: self.start_timer(900)},
-                {"label": "25 Min\nFokus", "icon": "🍅",
-                 "action": lambda: self.start_timer(1500, "Fokus")},
+                {"label": "Pomodoro", "icon": "🍅", "action": self.start_pomo,
+                 "on": bool(self.s["timer"].get("pomo"))},
                 {"label": "Eigene", "icon": "✏️", "action": lambda: self.start_prompt("timer")},
                 {"label": "+5 Min", "icon": "➕", "action": self.add_timer_minutes,
                  "dim": not active},
@@ -3055,6 +4111,7 @@ class Nova:
                 {"label": "Ausweichen", "icon": "☄️", "action": self.start_dodge_game},
                 {"label": "Merken", "icon": "🧠", "action": self.start_memory_game},
                 {"label": "Farm", "icon": "⛏️", "action": self.open_idle_window},
+                {"label": "RPG", "icon": "⚔️", "action": self.open_rpg_window},
                 {"label": "Extras", "icon": "✨", "action": go("play_extra")},
                 {"label": "Zurück", "icon": "↩️", "action": go("main")},
             ]
@@ -3129,8 +4186,24 @@ class Nova:
                  "action": lambda: self.control_media_key("next_track")},
                 {"label": "Apps", "icon": "🧩", "action": go("apps")},
                 {"label": "Fenster", "icon": "🪟", "action": go("windows")},
+                {"label": "Websites", "icon": "🌐", "action": go("sites")},
                 {"label": "Zurück", "icon": "↩️", "action": go("settings")},
             ]
+        if page == "sites":
+            items = [{"label": x["name"][:12], "icon": "🌐",
+                      "action": lambda u=x["url"]: self.open_site(u)} for x in self.s["sites"]]
+            items.extend([
+                {"label": "Website\nspeichern", "icon": "➕", "action": self.add_site},
+                {"label": "Websites\nentfernen", "icon": "🗑️", "action": go("remove_sites"),
+                 "dim": not self.s["sites"]},
+                {"label": "Zurück", "icon": "↩️", "action": go("control")},
+            ])
+            return "WEBSITES", items
+        if page == "remove_sites":
+            items = [{"label": x["name"][:12], "icon": "❌",
+                      "action": lambda u=x["url"]: self.remove_site(u)} for x in self.s["sites"]]
+            items.append({"label": "Zurück", "icon": "↩️", "action": go("sites")})
+            return "WEBSITE ENTFERNEN", items
         if page == "apps":
             items = [
                 {"label": os.path.splitext(os.path.basename(path))[0][:12],
@@ -3252,6 +4325,12 @@ class Nova:
             except tk.TclError:
                 pass
         self.radial_animation_id = None
+        if getattr(self, "radial_orbit_id", None):
+            try:
+                self.root.after_cancel(self.radial_orbit_id)
+            except tk.TclError:
+                pass
+        self.radial_orbit_id, self.radial_sats = None, []
         if self.radial_window is not None:
             try:
                 self.radial_window.destroy()
@@ -3331,7 +4410,59 @@ class Nova:
             item.setdefault("dim", False)
             item.setdefault("icon", "•")
         self.radial_items = items
+        self.radial_sats = [{"parent": it, "name": site["name"], "url": site["url"], "i": i,
+                             "n": len(it["orbit"]), "hover": False, "x": 0, "y": 0, "r": 0}
+                            for it in items for i, site in enumerate(it.get("orbit") or [])]
+        self.radial_phase, self.radial_phase_t = 0.0, time.monotonic()
+        if self.radial_sats:
+            self.orbit_radial()
         self.animate_radial_items(time.monotonic())
+
+    def orbit_radial(self):
+        """Shortcut-Kugeln (gespeicherte Websites) kreisen um ihre Hauptkugel."""
+        cv = self.radial_canvas
+        if cv is None:
+            return
+        now = time.monotonic()
+        if not any(s["hover"] for s in self.radial_sats):      # beim Zielen anhalten
+            self.radial_phase += (now - self.radial_phase_t) * 0.9
+        self.radial_phase_t = now
+        for sat in self.radial_sats:
+            par = sat["parent"]
+            k = par["r"] / par["r0"] if par["r0"] else 0.0
+            ang = self.radial_phase + 2 * math.pi * sat["i"] / sat["n"]
+            dist = (par["r0"] + 19) * k
+            sat["x"], sat["y"] = par["x"] + dist * math.cos(ang), par["y"] + dist * math.sin(ang)
+            sat["r"] = 9 * k
+            x, y, r = sat["x"], sat["y"], max(2.0, sat["r"] * (1.15 if sat["hover"] else 1.0))
+            fill, line = (EDGE, LIGHT) if sat["hover"] else (PANEL2, ACCENT)
+            if "oval" not in sat:
+                sat["oval"] = cv.create_oval(0, 0, 0, 0, width=2)
+                sat["text"] = cv.create_text(0, 0, text=sat["name"][:1].upper(), fill=LIGHT,
+                                             font=("Consolas", 8, "bold"))
+                sat["tip_bg"] = cv.create_rectangle(0, 0, 0, 0, fill=PANEL, outline=ACCENT, width=2,
+                                                    state="hidden")
+                sat["tip"] = cv.create_text(0, 0, text=sat["name"][:24], fill=LIGHT,
+                                            font=("Consolas", 9, "bold"), state="hidden")
+                cv.tag_lower(sat["text"])
+                cv.tag_lower(sat["oval"])        # unter den Hauptkugeln
+            cv.coords(sat["oval"], x - r, y - r, x + r, y + r)
+            cv.itemconfigure(sat["oval"], fill=fill, outline=line)
+            cv.coords(sat["text"], x, y)
+            cv.itemconfigure(sat["text"], state="normal" if k >= 1 else "hidden")
+            shown = "normal" if sat["hover"] else "hidden"
+            cv.coords(sat["tip"], x, y - r - 12)
+            bb = cv.bbox(sat["tip"])
+            if bb:
+                cv.coords(sat["tip_bg"], bb[0] - 4, bb[1] - 2, bb[2] + 4, bb[3] + 2)
+            cv.itemconfigure(sat["tip"], state=shown)
+            cv.itemconfigure(sat["tip_bg"], state=shown)
+            if sat["hover"]:
+                cv.tag_raise(sat["oval"])
+                cv.tag_raise(sat["text"])
+                cv.tag_raise(sat["tip_bg"])
+                cv.tag_raise(sat["tip"])
+        self.radial_orbit_id = self.root.after(33, self.orbit_radial)
 
     def place_radial(self, win, left, top):
         """Setzt das Menüfenster (Windows: auch auf Monitoren links/oberhalb des Hauptmonitors)."""
@@ -3427,6 +4558,11 @@ class Nova:
             if hovered != item["hover"]:
                 item["hover"] = hovered
                 changed = True
+        for sat in getattr(self, "radial_sats", []):
+            dx, dy = event.x - sat["x"], event.y - sat["y"]
+            hovered = sat["r"] >= 8 and dx * dx + dy * dy <= (sat["r"] + 3) ** 2
+            if hovered != sat["hover"]:
+                sat["hover"] = hovered
         if changed:
             self.draw_radial_items()
 
@@ -3446,6 +4582,12 @@ class Nova:
                 if self._uses_ai_speech() and not self.ai_radial_action_spoke:
                     if not self.ai_radial_action_has_message or self.voice_enabled:
                         self._say_ai_radial_response()
+                return
+        for sat in getattr(self, "radial_sats", []):
+            if sat["hover"]:
+                url = sat["url"]
+                self.close_radial_menu()
+                self.open_site(url)
                 return
 
     def check_radial_idle(self, now):
@@ -5124,13 +6266,50 @@ class Nova:
         self.say("Fang mich, wenn du kannst!", 3, speak=False)
 
     def schedule_jump(self, now):
-        self.jump_from = (self.x, self.y)
-        self.jump_to = (random.randint(0, max(0, self.sw - W)),
-                        random.randint(0, max(0, self.sh - H)))
-        self.jump_started = now
-        self.jump_duration = max(0.3, random.uniform(0.45, 0.75) - 0.03 * self.game_score)
-        self.jump_height = random.randint(25, 80)
-        self.jump_next = now + self.jump_duration + random.uniform(0.15, 0.35)
+        """Neuer Sprung als Abwurf: Schwerkraft, Abprallen an Wänden/Decke/Boden. Jeder Treffer = schneller."""
+        sp = 1 + min(1.5, 0.1 * self.game_score)
+        vl, vt, vr, vb = self.virtual_bounds()
+        far = 1 if self.x < (vl + vr - W) / 2 else -1          # meist zur gegenüberliegenden Seite
+        side = far if random.random() < 0.7 else -far
+        self.jump_v = [side * random.uniform(350, 750) * sp,
+                       -random.uniform(900, 1350) * min(sp, 1.4)]
+        self.jump_next = now + random.uniform(0.5, 0.9)         # frühestens dann wieder abspringen
+        self.sfx_play("swish", now=time.monotonic())
+
+    def game_dt(self, now):
+        dt = clamp(now - getattr(self, "game_t", now), 0.0, 0.05)
+        self.game_t = now
+        return dt
+
+    def jump_step(self, now):
+        dt = self.game_dt(now)
+        vl, vt, vr, vb = self.virtual_bounds()
+        lo, hi = vl - PHYS_WALL_MARGIN, vr - W + PHYS_WALL_MARGIN
+        vt -= max(0, H - 5 - self.figure_h()) + self.head_off()
+        floor = self.floor_y()
+        vx, vy = self.jump_v
+        if self.y >= floor - 1 and abs(vy) < 120 and now >= self.jump_next:
+            self.schedule_jump(now)
+            vx, vy = self.jump_v
+        vy = min(PHYS_MAX_FALL, vy + PHYS_GRAVITY * dt)
+        self.x += vx * dt
+        self.y += vy * dt
+        if self.x < lo or self.x > hi:
+            self.x, vx = (lo, abs(vx)) if self.x < lo else (hi, -abs(vx))
+            vx *= PHYS_WALL_BOUNCE
+            self.sfx_play("bump", now=time.monotonic())
+        if self.y < vt:
+            self.y, vy = float(vt), abs(vy) * PHYS_WALL_BOUNCE
+        if self.y >= floor:
+            impact = vy
+            self.y = floor
+            vy = -impact * PHYS_FLOOR_BOUNCE if impact > 180 else 0.0
+            vx *= math.exp(-8 * dt) if vy == 0.0 else 0.85       # Bodenreibung
+            if impact > 500:
+                self.sfx_play("land", now=time.monotonic())
+        if abs(vx) > 80:
+            self.dir = 1 if vx > 0 else -1
+        self.jump_v = [vx, vy]
 
     def finish_game(self, mode, score, points, fun_per_point, label, extra=""):
         """Gemeinsame Belohnung: Spaß, Punkte, Rekordbonus, Ergebnistext."""
@@ -5169,14 +6348,7 @@ class Nova:
                 return
             if self.radial_window is not None:
                 return
-            if now >= self.jump_next:
-                self.schedule_jump(now)
-            if self.jump_from is not None and self.jump_to is not None:
-                progress = clamp((now - self.jump_started) / self.jump_duration)
-                eased = 1 - (1 - progress) ** 3
-                self.x = self.jump_from[0] + (self.jump_to[0] - self.jump_from[0]) * eased
-                self.y = (self.jump_from[1] + (self.jump_to[1] - self.jump_from[1]) * eased
-                          - math.sin(math.pi * progress) * self.jump_height)
+            self.jump_step(now)
             return
         if self.game_mode == "reflex":
             if now >= self.game_end or self.reflex_round >= 5:
@@ -5186,6 +6358,15 @@ class Nova:
                 self.finish_game("reflex", hits + self.game_bonus, hits + self.game_bonus, 4,
                                  f"Reaktionstest {hits}/5", extra)
                 return
+            dt = self.game_dt(now)
+            t = self.reflex_target
+            if t:
+                t["x"] += t["vx"] * dt
+                t["y"] += t["vy"] * dt
+                if not 38 <= t["x"] <= W - 38:
+                    t["x"], t["vx"] = clamp(t["x"], 38, W - 38), -t["vx"]
+                if not HUD_H + 60 <= t["y"] <= H - 40:
+                    t["y"], t["vy"] = clamp(t["y"], HUD_H + 60, H - 40), -t["vy"]
             if self.reflex_target and self.reflex_target["until"] <= now:
                 self.reflex_target = None
                 self.reflex_round += 1
@@ -5195,16 +6376,29 @@ class Nova:
                     "x": random.randint(38, W - 38),
                     "y": random.randint(HUD_H + 60, H - 40),
                     "r": 19, "born": now, "until": now + REFLEX_LIFETIME,
+                    "vx": random.choice((-1, 1)) * random.uniform(90, 170),
+                    "vy": random.choice((-1, 1)) * random.uniform(90, 170),
                 }
             return
         self.dots = [d for d in self.dots if d["until"] > now]
+        dt, top, floor = self.game_dt(now), HUD_H + 50, H - 30
+        for d in self.dots:
+            d["vy"] += PHYS_GRAVITY * 0.4 * dt
+            d["x"] += d["vx"] * dt
+            d["y"] += d["vy"] * dt
+            if not 24 <= d["x"] <= W - 24:
+                d["x"], d["vx"] = clamp(d["x"], 24, W - 24), -d["vx"] * PHYS_ICE_BOUNCE
+            if d["y"] < top:
+                d["y"], d["vy"] = top, abs(d["vy"]) * PHYS_WALL_BOUNCE
+            elif d["y"] > floor:
+                d["y"], d["vy"] = floor, -abs(d["vy"]) * PHYS_ICE_BOUNCE
         if now >= self.game_end:
             score = self.game_score
             self.finish_game("dots", score, score, 3, "Runde vorbei", " Punkte")
             return
         if random.random() < 0.05 and len(self.dots) < 4:
-            self.dots.append({"x": random.randint(24, W - 24),
-                              "y": random.randint(HUD_H + 50, H - 30),
+            self.dots.append({"x": random.randint(24, W - 24), "y": H - 30,
+                              "vx": random.uniform(-170, 170), "vy": -random.uniform(520, 780),
                               "until": now + DOT_LIFETIME})
 
     # ================= Neue Minispiele: Pong, Ausweichen, Merken =================
@@ -5570,6 +6764,7 @@ class Nova:
             return
         st["bits"] -= cost
         st["gens"][gid] = self.idle_owned(gid) + count
+        self.idle_sfx("buy", 0.05)
         self.refresh_idle_window(reschedule=False)
 
     def idle_buy_upgrade(self, uid):
@@ -5579,13 +6774,63 @@ class Nova:
             return
         st["bits"] -= upgrade[3]
         st["upgrades"].append(uid)
+        self.idle_sfx("upgrade")
         self.refresh_idle_window(reschedule=False)
 
     def idle_click(self):
         st = self.s["idle"]
-        self.idle_add(self.idle_click_value())
+        value = self.idle_click_value()
+        self.idle_add(value)
         st["clicks"] += 1
+        scene = self.idle_scene
+        if scene is not None:                       # Held hackt zu und zappt ein Monster in Reichweite
+            scene.swing()
+            scene.popup("+" + fmt_num(value))
+            if not scene.hit_nearest():
+                self.idle_sfx("hack", 0.08)
+        else:
+            self.idle_sfx("hack", 0.08)
         self.refresh_idle_window(reschedule=False)
+
+    def idle_sfx(self, kind, gap=0.0):
+        """Farm-Soundeffekt (nutzt NOVAs Effekt-Schalter); gap = Mindestabstand pro Art in Sekunden."""
+        now = time.monotonic()
+        if now - self.idle_sfx_last.get(kind, -99.0) < gap:
+            return
+        self.idle_sfx_last[kind] = now
+        self.sfx_play(kind, force=True)
+
+    def idle_monster_kill(self, kind):
+        """Ein Monster wurde gehackt: Belohnung = ca. 15 s Produktion (mind. 10 Klicks)."""
+        st = self.s["idle"]
+        amount = max(self.idle_rate() * 15, self.idle_click_value() * 10)
+        self.idle_add(amount)
+        st["kills"] += 1
+        self.idle_status = f"{SCENE_MONSTERS.get(kind, 'Monster')} gehackt: +{fmt_num(amount)} Bits"
+        return amount
+
+    def idle_anim_tick(self):
+        """Schneller Animations-Takt der Szene (unabhängig vom 250-ms-Refresh der Zahlen)."""
+        win, scene = self.idle_window, self.idle_scene
+        if win is None or scene is None:
+            return
+        delay = 45
+        try:
+            if win.winfo_viewable():
+                st = self.s["idle"]
+                scene.owned = st["gens"]
+                scene.total = st["total"]
+                scene.tick()
+            else:
+                delay = 400
+                scene.last = time.time()
+            self.idle_anim_id = win.after(delay, self.idle_anim_tick)
+        except tk.TclError:
+            self.idle_anim_id = None
+
+    def idle_scene_click(self, event):
+        if self.idle_scene is not None:
+            self.idle_scene.click(event.x, event.y)
 
     def idle_reboot_gain(self):
         run = self.s["idle"]["run"]
@@ -5607,6 +6852,7 @@ class Nova:
         st["reboots"] += 1
         self.add_points(gain * 3, announce=False)
         self.idle_status = f"Reboot! +{gain} Chips, +{gain * 3} Punkte."
+        self.idle_sfx("reboot")
         self.save()
         self.say(f"Reboot abgeschlossen: +{gain} Chips!", 5, speak=False)
         self.refresh_idle_window(reschedule=False)
@@ -5627,8 +6873,8 @@ class Nova:
         win = NovaToplevel(self.root)
         win.title("NOVA – Daten-Farm")
         win.configure(bg=PANEL)
-        win.geometry("900x600")
-        win.minsize(820, 560)
+        win.geometry("900x730")
+        win.minsize(820, 690)
         win.protocol("WM_DELETE_WINDOW", self.close_idle_window)
         self.idle_window = win
         ui = {"gens": {}, "ups": {}, "buy": {}}
@@ -5636,13 +6882,21 @@ class Nova:
 
         tk.Label(win, text="NOVA · DATEN-FARM", bg=PANEL, fg=ACCENT,
                  font=("Consolas", 16, "bold")).pack(pady=(10, 0))
-        tk.Label(win, text="Läuft im Hintergrund weiter, solange NOVA läuft. "
-                           "Offline gibt es 50 % für bis zu 12 Stunden.",
+        tk.Label(win, text="Läuft im Hintergrund weiter. Offline 50 % für bis zu 12 Stunden. "
+                           "Monster anklicken = Bonus-Bits!",
                  bg=PANEL, fg=DIM, font=("Consolas", 8)).pack(pady=(0, 6))
         ui["bits"] = tk.Label(win, bg=PANEL, fg=LIGHT, font=("Consolas", 22, "bold"))
         ui["bits"].pack()
         ui["rate"] = tk.Label(win, bg=PANEL, fg=ACCENT, font=("Consolas", 10, "bold"))
-        ui["rate"].pack(pady=(0, 8))
+        ui["rate"].pack(pady=(0, 6))
+
+        scene_canvas = tk.Canvas(win, height=SCENE_H, bg=PANEL, highlightthickness=1,
+                                 highlightbackground=EDGE, cursor="crosshair")
+        scene_canvas.pack(fill="x", padx=12, pady=(0, 8))
+        scene_canvas.bind("<Button-1>", self.idle_scene_click)
+        self.idle_scene = IdleScene(scene_canvas, self.idle_monster_kill,
+                                    lambda kind: self.idle_sfx(kind, 0.05))
+        self.idle_anim_id = win.after(50, self.idle_anim_tick)
 
         body = tk.Frame(win, bg=PANEL)
         body.pack(fill="both", expand=True, padx=12)
@@ -5705,6 +6959,13 @@ class Nova:
             except tk.TclError:
                 pass
         self.idle_after_id = None
+        if self.idle_anim_id is not None and self.idle_window is not None:
+            try:
+                self.idle_window.after_cancel(self.idle_anim_id)
+            except tk.TclError:
+                pass
+        self.idle_anim_id = None
+        self.idle_scene = None
         win, self.idle_window = self.idle_window, None
         self.idle_ui = {}
         if win is not None:
@@ -5765,7 +7026,7 @@ class Nova:
                 ui["reboot"].config(state="disabled", bg=PANEL2, fg=DIM)
             ui["stats"].config(
                 text=f"Chips: {st['chips']} (+{int(st['chips'] * IDLE_CHIP_BONUS * 100)} %) · "
-                     f"Reboots: {st['reboots']} · Klicks: {st['clicks']}\n"
+                     f"Reboots: {st['reboots']} · Klicks: {st['clicks']} · Monster: {st['kills']}\n"
                      f"Gesamt verdient: {fmt_num(st['total'])} Bits")
             ui["status"].config(text=self.idle_status)
             if reschedule:
@@ -5865,6 +7126,1771 @@ class Nova:
         self.canvas.create_text(width // 2, 62, text="⏰ " + (self.alarm_title or "ALARM"),
                                 fill=color, font=("Consolas", 11, "bold"))
 
+    # ================= Alltime-Spiel: RPG im Stil der alten Zelda-Spiele =================
+    RPG_W, RPG_H = RPG_PW, RPG_PH
+
+    def rpg_stats(self):
+        r = self.s["rpg"]
+        return (40 + 10 * (r["lvl"] + r["hearts"]) + (20 if "titan" in r["imp"] else 0),
+                5 + 2 * r["lvl"] + 4 * r["wpn"], 2 * r["arm"])   # HP, ATK, DEF
+
+    def rpg_has(self, key):
+        return key in self.s["rpg"]["imp"]
+
+    def rpg_mut(self):
+        dun = self.rpg_g["dun"]
+        return dun["mut"] if dun else None
+
+    def rpg_dmg(self, base):
+        """Schaden des Spielers inkl. Implantate und Mutator."""
+        d = float(base)
+        if self.rpg_has("blade"):
+            d *= 1.3
+        if self.rpg_has("crit") and random.random() < 0.15:
+            d *= 3
+        if self.rpg_mut() == "glass":
+            d *= 1.5
+        return max(1, int(d))
+
+    def rpg_regen(self):
+        r, now = self.s["rpg"], time.time()
+        r["hp"] = min(float(self.rpg_stats()[0]), r["hp"] + max(0.0, now - r["t"]) / 15)
+        r["t"] = now
+
+    def rpg_log(self, text):
+        self.rpg_lines = (getattr(self, "rpg_lines", []) + [text])[-5:]
+
+    def rpg_sfx(self, kind):
+        """Spielgeräusche über das vorhandene Effekt-System. Wichtige Töne werden nicht von Kleinkram abgewürgt."""
+        g = getattr(self, "rpg_g", None)
+        if g is None or kind not in RPG_SFX_META:
+            return
+        pri, dur, gap = RPG_SFX_META[kind]
+        now = time.monotonic()
+        st = g["sfx"]
+        if now - st["kind"].get(kind, -99.0) < gap or (now < st["until"] and pri < st["pri"]):
+            return
+        if self.sfx_play(kind, now=now, force=True):
+            st["until"], st["pri"] = now + SFX_PAD_LEAD + dur, pri      # Ton beginnt nach der Vorlaufstille
+            st["kind"][kind] = now
+
+    def rpg_toast(self, text, secs=1.8):
+        self.rpg_g["toast"] = (text, time.time() + secs)
+
+    def rpg_new_state(self):
+        vx, vy = rpg_roles(self.s["rpg"]["seed"])["village"]
+        return {"area": "over", "ox": vx, "oy": vy, "dun": None, "dpos": None, "ret": None,
+                "pick": None, "aegis": False,
+                "x": 7.0 * RPG_T, "y": 6.5 * RPG_T, "face": (0, 1), "walk": 0.0,
+                "keys": set(), "held": set(), "skeys": 0,
+                "acd": 0.0, "swing0": -9.0, "swing_hit": set(), "hurt": 0.0, "kb": (0.0, 0.0, 0.0),
+                "mons": [], "drops": [], "shots": [], "bombs": [], "fx": [], "npcs": [], "chests": [],
+                "shop": [], "decor": [], "solids": [], "room": None, "dirty": True, "trans": None,
+                "fade": None, "dlg": None, "over": 0.0, "toast": ("", 0.0), "hint": 0.0,
+                "t": time.time(), "n": 0, "hud_sig": None, "sfx": {"until": 0.0, "pri": 0, "kind": {}}}
+
+    # ---------- Räume aufbauen ----------
+    def rpg_rebuild_solids(self):
+        g = self.rpg_g
+        g["solids"] = ([(n["x"], n["y"], 12) for n in g["npcs"]]
+                       + [(c["x"], c["y"], 13) for c in g["chests"]]
+                       + [(s["x"], s["y"], 13) for s in g["shop"]])
+
+    def rpg_build_room(self, now):
+        g, r = self.rpg_g, self.s["rpg"]
+        for key in ("mons", "drops", "shots", "bombs", "fx", "npcs", "chests", "shop", "decor"):
+            g[key] = []
+        g["dirty"], g["swing_hit"], g["aegis"] = True, set(), False
+        rng = random.Random()
+        area, T = g["area"], RPG_T
+        room = {"theme": {"dun": "dun", "in": "in"}.get(area, "over"), "doors": {}, "signs": {},
+                "gaps": [], "shut": False}
+        g["room"] = room
+        if area == "over":
+            room["tiles"], info = rpg_gen_over(g["ox"], g["oy"], r["seed"])
+            room["doors"], room["signs"] = info["doors"], info["signs"]
+            g["npcs"] = [dict(n) for n in info["npcs"]]
+            self.rpg_rebuild_solids()
+            if info["enemies"]:
+                f = r["floor"]
+                for kind in rpg_pick_types(f, rng, rng.randint(2, 3) + (1 if f >= 6 else 0)):
+                    self.rpg_spawn(kind, f, rng, now)
+        elif area == "in":
+            kind = g["ret"]["kind"]
+            room["tiles"] = rpg_gen_interior(kind)
+            if kind == "shop":
+                g["npcs"].append({"x": 7 * T, "y": 1.7 * T, "name": "Schieber", "kind": "shopkeeper"})
+                items = ["potion", "bomb", "wpn", "arm"]
+                imp = self.rpg_shop_implant()
+                if imp:
+                    items.append("imp:" + imp)
+                for i, item in enumerate(items):
+                    g["shop"].append({"x": (7 + (i - (len(items) - 1) / 2) * 2.5) * T, "y": 4 * T, "item": item})
+            elif kind == "oldman":
+                g["npcs"].append({"x": 7 * T, "y": 2.5 * T, "name": "Alter Netrunner", "kind": "oldman"})
+                g["decor"] = [("fire", 5 * T, 2.5 * T), ("fire", 9 * T, 2.5 * T)]
+            else:
+                g["chests"].append({"x": 7 * T, "y": 3 * T, "open": bool(r["flags"] & 2),
+                                    "item": "gold", "amount": 120 + 20 * r["floor"], "id": "secret"})
+            self.rpg_rebuild_solids()
+        else:
+            dun, pos = g["dun"], g["dpos"]
+            room["tiles"], room["gaps"] = rpg_dun_tiles(dun, pos)
+            room["dt"] = dun["theme"]
+            dun["visited"].add(pos)
+            f = dun["f"]
+            mut = dun["mut"]
+            if pos not in dun["cleared"]:
+                if pos == dun["boss"]:
+                    at = (RPG_PW - 80 if g["x"] <= RPG_PW / 2 else 80, RPG_PH / 2)
+                    kind = RPG_BOSSES[(f - 1) % 3]
+                    if kind != "drache":
+                        at = (RPG_PW / 2, RPG_PH / 2)
+                    self.rpg_spawn(kind, f, rng, now, at=at)
+                    self.rpg_toast("BOSS: " + RPG_TYPES[kind]["name"], 2.4)
+                    self.rpg_sfx("rpg_boss")
+                elif pos != dun["start"]:
+                    n = min(6, rng.randint(2, 3) + (f >= 4) + (f >= 9))
+                    if mut == "lean":
+                        n = max(1, n - 1)
+                    for i, kind in enumerate(rpg_pick_types(f, rng, n)):
+                        self.rpg_spawn(kind, f, rng, now, elite=(mut == "elite" and i == 0))
+            if not g["mons"]:
+                dun["cleared"].add(pos)
+                self.rpg_room_rewards()
+            self.rpg_rebuild_solids()
+
+    def rpg_room_rewards(self):
+        """Truhen (Schlüssel/EMP-Bomben) und der Ausgang nach dem Boss erscheinen in geräumten Räumen."""
+        g = self.rpg_g
+        dun, pos, T = g["dun"], g["dpos"], RPG_T
+        if dun is None:
+            return
+        for tag, item in (("keyroom", "key"), ("bombroom", dun["bonus"])):
+            if dun[tag] == pos and (item, pos) not in dun["opened"] and not g["chests"]:
+                g["chests"].append({"x": 7 * T, "y": 2.5 * T, "open": False, "item": item,
+                                    "amount": 1 if item == "key" else 4, "id": (item, pos)})
+        if pos == dun["boss"] and dun["boss_done"]:
+            t = g["room"]["tiles"]
+            t[2][6] = t[2][7] = "F"
+            g["dirty"] = True
+        self.rpg_rebuild_solids()
+
+    def rpg_make_mon(self, kind, f, x, y, now, elite=False):
+        base = RPG_TYPES[kind]
+        hp = (18 + f * 10) * base["hp"]
+        dirs = random.choice(RPG_DIRS)
+        m = {"type": kind, "name": base["name"], "x": float(x), "y": float(y), "hp": hp, "max": hp,
+             "r": base["r"], "boss": bool(base.get("boss")), "fly": bool(base.get("fly")),
+             "shield": bool(base.get("shield")), "atk": max(1, int((3 + f * 1.6) * base["atk"])),
+             "spd": base["spd"], "f": f, "dir": dirs, "cdir": dirs, "state": "idle",
+             "start": now + 0.9, "next": now + random.uniform(0.9, 1.6), "until": 0.0, "cool": 0.0,
+             "stun": 0.0, "flash": 0.0, "inv": 0.0, "kx": 0.0, "ky": 0.0, "ku": 0.0,
+             "vx": 0.0, "vy": 0.0, "trail": [], "tt": 0.0, "phase": random.random() * 6}
+        if self.rpg_mut() == "surge":
+            m["spd"] *= 1.3
+        if elite:
+            m.update(elite=True, hp=m["hp"] * 2.2, max=m["max"] * 2.2, atk=int(m["atk"] * 1.3) + 1,
+                     name="ELITE " + m["name"], r=m["r"] + 2)
+        m.setdefault("elite", False)
+        if kind == "wurm":
+            m["vx"], m["vy"] = random.choice((-1, 1)) * 0.7071, random.choice((-1, 1)) * 0.7071
+            m["start"] = now + 1.3
+        if kind in ("drache", "koloss"):
+            m["start"] = now + 1.3
+        return m
+
+    def rpg_spawn(self, kind, f, rng, now, at=None, elite=False):
+        g, T = self.rpg_g, RPG_T
+        base = RPG_TYPES[kind]
+        mover = "f" if base.get("fly") else "e"
+        if at is None:
+            x, y = 7 * T, 4 * T
+            for _ in range(60):
+                cx, cy = rng.randint(2, RPG_COLS - 3) * T + T / 2, rng.randint(2, RPG_ROWS - 3) * T + T / 2
+                if (not self.rpg_blocked(cx, cy, base["r"] - 2, mover)
+                        and math.hypot(cx - g["x"], cy - g["y"]) > 130):
+                    x, y = cx, cy
+                    break
+        else:
+            x, y = at
+        g["mons"].append(self.rpg_make_mon(kind, f, x, y, now, elite))
+
+    # ---------- Kollision ----------
+    def rpg_blocked(self, x, y, hs, mover):
+        g, T = self.rpg_g, RPG_T
+        if mover == "f":
+            return not (T + hs <= x <= RPG_PW - T - hs and T + hs <= y <= RPG_PH - T - hs)
+        tiles = g["room"]["tiles"]
+        for cx in (x - hs, x + hs):
+            for cy in (y - hs, y + hs):
+                c, r = int(cx // T), int(cy // T)
+                if not (0 <= c < RPG_COLS and 0 <= r < RPG_ROWS):
+                    if mover == "p":
+                        continue
+                    return True
+                ch = tiles[r][c]
+                if ch in RPG_SOLID:
+                    if ch == "L" and mover == "p" and self.rpg_unlock(c, r):
+                        continue
+                    return True
+        for sx, sy, sh in g["solids"]:
+            if abs(x - sx) < hs + sh and abs(y - sy) < hs + sh:
+                return True
+        return False
+
+    def rpg_unlock(self, c, r):
+        g = self.rpg_g
+        if g["area"] != "dun":
+            return False
+        if g["skeys"] <= 0:
+            if time.time() > g["hint"]:
+                g["hint"] = time.time() + 2.0
+                self.rpg_toast("Verschlossen. Du brauchst einen Schlüssel.")
+                self.rpg_sfx("rpg_locked")
+            return False
+        dun, pos, tiles = g["dun"], g["dpos"], g["room"]["tiles"]
+        for d in g["room"]["gaps"]:
+            if (c, r) in RPG_GAPS[d]:
+                edge = frozenset((pos, (pos[0] + d[0], pos[1] + d[1])))
+                if edge in dun["locks"]:
+                    dun["locks"].discard(edge)
+                    g["skeys"] -= 1
+                    for cc, rr in RPG_GAPS[d]:
+                        if tiles[rr][cc] == "L":
+                            tiles[rr][cc] = "."
+                    g["dirty"] = True
+                    self.rpg_toast("Tür aufgeschlossen!")
+                    self.rpg_sfx("rpg_unlock")
+                    return True
+        return False
+
+    # ---------- Dialog, Interaktion ----------
+    def rpg_busy(self):
+        g = self.rpg_g
+        return bool(g["dlg"] or g["fade"] or g["trans"] or g["over"] or g["pick"])
+
+    def rpg_talk(self, who, lines, after=None):
+        self.rpg_g["dlg"] = {"who": who, "lines": list(lines), "i": 0, "t0": time.time(), "after": after}
+        self.rpg_sfx("rpg_blip")
+
+    def rpg_dlg_next(self):
+        g = self.rpg_g
+        d = g["dlg"]
+        if not d:
+            return
+        if int((time.time() - d["t0"]) * 45) < len(d["lines"][d["i"]]):
+            d["t0"] = 0.0                                  # erst alles anzeigen
+            return
+        d["i"] += 1
+        d["t0"] = time.time()
+        self.rpg_sfx("rpg_blip")
+        if d["i"] >= len(d["lines"]):
+            g["dlg"] = None
+            if d["after"]:
+                d["after"]()
+
+    def rpg_action(self):
+        g = self.rpg_g
+        if g["dlg"]:
+            self.rpg_dlg_next()
+        elif not self.rpg_busy() and not self.rpg_interact():
+            self.rpg_attack()
+
+    def rpg_price(self, item):
+        r = self.s["rpg"]
+        if item == "potion":
+            return 15
+        if item == "bomb":
+            return 25
+        if item.startswith("imp:"):
+            return None if item[4:] in r["imp"] else 150 + 40 * r["floor"]
+        key = "wpn" if item == "wpn" else "arm"
+        return None if r[key] >= 5 else (40 if key == "wpn" else 35) * (r[key] + 1) ** 2
+
+    def rpg_interact(self):
+        g, r = self.rpg_g, self.s["rpg"]
+        fx, fy = g["face"]
+        px, py = g["x"] + fx * 20, g["y"] + fy * 20
+        best, bd = None, 27.0
+        for kind, lst in (("npc", g["npcs"]), ("chest", g["chests"]), ("shop", g["shop"])):
+            for o in lst:
+                d = math.hypot(o["x"] - px, o["y"] - py)
+                if d < bd:
+                    best, bd = (kind, o), d
+        if best is None:
+            c, rr = int(px // RPG_T), int(py // RPG_T)
+            if 0 <= c < RPG_COLS and 0 <= rr < RPG_ROWS and g["room"]["tiles"][rr][c] == "s":
+                self.rpg_talk("Schild", [g["room"]["signs"].get((c, rr), "...")])
+                return True
+            return False
+        kind, o = best
+        if kind == "shop":
+            self.rpg_buy("buy_" + o["item"])
+        elif kind == "chest":
+            self.rpg_open_chest(o)
+        elif o["kind"] == "villager":
+            self.rpg_talk(o["name"], [random.choice(RPG_VILLAGER_LINES)])
+        elif o["kind"] == "shopkeeper":
+            self.rpg_talk(o["name"], ["Willkommen im Hinterzimmer, Choom!",
+                                      "Stell dich vor eine Ware und drück die LEERTASTE. Mein Lager wechselt täglich."])
+        else:
+            hint = self.rpg_gate_hint()
+            if not r["flags"] & 1:
+                def gift():
+                    r["flags"] |= 1
+                    r["bombs"] = min(99, r["bombs"] + 3)
+                    self.rpg_toast("+3 EMP-Bomben!")
+                    self.rpg_talk(o["name"], ["EMP-Bomben legst du mit B.", "Brüchiger Beton hält ihnen nicht stand.", hint])
+                    self.save()
+                self.rpg_talk(o["name"], ["ES IST GEFÄHRLICH ALLEIN!", "NIMM DIES."], after=gift)
+            else:
+                self.rpg_talk(o["name"], ["Du schon wieder? Das Netz wartet nicht.", hint])
+        return True
+
+    def rpg_gate_hint(self):
+        roles = rpg_roles(self.s["rpg"]["seed"])
+        (vx, vy), (gx, gy) = roles["village"], roles["dungeon"]
+        dx, dy = gx - vx, gy - vy
+        v = "nord" if dy < 0 else "süd" if dy > 0 else ""
+        h = "östlich" if dx > 0 else "westlich" if dx < 0 else ""
+        where = v + h if (v and h) else ({"nord": "nördlich", "süd": "südlich"}.get(v, "") or h)
+        n = abs(dx) + abs(dy)
+        return f"Das Netz-Gate liegt {where} vom Dorf, {n} Bildschirm{'e' if n != 1 else ''} entfernt."
+
+    def rpg_open_chest(self, ch):
+        g, r = self.rpg_g, self.s["rpg"]
+        if ch["open"]:
+            self.rpg_talk("Truhe", ["Sie ist leer."])
+            return
+        if ch["item"] == "terminal":
+            self.rpg_open_terminal(ch)
+            return
+        ch["open"] = True
+        self.rpg_sfx("rpg_chest")
+        if ch["item"] == "imp":
+            g["dun"]["opened"].add(ch["id"])
+            self.rpg_offer_implants("IMPLANTAT-KISTE")
+        elif ch["item"] == "key":
+            g["skeys"] += 1
+            g["dun"]["opened"].add(ch["id"])
+            self.rpg_talk("Truhe", ["Du hast einen kleinen Schlüssel gefunden!",
+                                    "Er öffnet eine verschlossene Tür."])
+        elif ch["item"] == "bombs":
+            r["bombs"] = min(99, r["bombs"] + ch["amount"])
+            g["dun"]["opened"].add(ch["id"])
+            self.rpg_talk("Truhe", [f"{ch['amount']} EMP-Bomben gefunden!"])
+        else:
+            r["gold"] = min(RPG_KEYS["gold"][1], r["gold"] + ch["amount"])
+            r["flags"] |= 2
+            self.rpg_talk("Truhe", [f"Ein Geheimversteck! +{ch['amount']} Credits."])
+        self.save()
+
+    # ---------- Implantate & Auswahl ----------
+    def rpg_shop_implant(self):
+        r = self.s["rpg"]
+        pool = sorted(k for k in RPG_IMPLANTS if k not in r["imp"])
+        return random.Random(r["seed"] * 17 + r["floor"]).choice(pool) if pool else None
+
+    def rpg_give_implant(self, key):
+        r = self.s["rpg"]
+        if key in r["imp"]:
+            return
+        r["imp"].append(key)
+        self.rpg_sfx("upgrade")
+        r["hp"] = min(r["hp"], float(self.rpg_stats()[0]))
+        self.rpg_toast(f"IMPLANTAT: {RPG_IMPLANTS[key][0]}", 2.5)
+        self.rpg_log(f"Implantat installiert: {RPG_IMPLANTS[key][0]} ({RPG_IMPLANTS[key][1]})")
+        self.save()
+        self.rpg_refresh()
+
+    def rpg_offer_implants(self, title):
+        g, r = self.rpg_g, self.s["rpg"]
+        pool = [k for k in RPG_IMPLANTS if k not in r["imp"]]
+        if not pool:
+            bonus = 100 + 25 * r["floor"]
+            r["gold"] += bonus
+            self.rpg_toast(f"Alle Implantate da! +{bonus} Credits")
+            return
+        opts = [{"label": RPG_IMPLANTS[k][0], "desc": RPG_IMPLANTS[k][1],
+                 "fn": (lambda k=k: self.rpg_give_implant(k))} for k in random.sample(pool, min(3, len(pool)))]
+        g["pick"] = {"title": title, "sel": 0, "opts": opts}
+
+    def rpg_pick_choose(self, i):
+        g = self.rpg_g
+        p = g["pick"]
+        if not p or not (0 <= i < len(p["opts"])):
+            return
+        g["pick"] = None
+        p["opts"][i]["fn"]()
+
+    def rpg_open_terminal(self, ch):
+        g, r = self.rpg_g, self.s["rpg"]
+        f = g["dun"]["f"]
+        cash = 60 + 30 * f
+
+        def blood():
+            if r["hp"] <= 35:
+                self.rpg_toast("Zu schwach für den Deal.")
+                return
+            r["hp"] -= 30
+            ch["open"] = True
+            g["dun"]["opened"].add(ch["id"])
+            self.rpg_offer_implants("BLUT-DEAL")
+
+        def cashout():
+            ch["open"] = True
+            g["dun"]["opened"].add(ch["id"])
+            r["gold"] += cash
+            self.rpg_toast(f"+{cash} Credits")
+            self.save()
+
+        g["pick"] = {"title": "SCHWARZMARKT-TERMINAL", "sel": 0, "opts": [
+            {"label": "BLUT-DEAL", "desc": "-3 Herzen, dafür ein Implantat zur Wahl", "fn": blood},
+            {"label": "CASH-OUT", "desc": f"Sofort +{cash} Credits, kein Risiko", "fn": cashout},
+            {"label": "IGNORIEREN", "desc": "Terminal in Ruhe lassen", "fn": lambda: None}]}
+
+    def rpg_buy(self, kind):
+        r = self.s["rpg"]
+        item = kind[4:]
+        cost = self.rpg_price(item)
+        if cost is None:
+            self.rpg_toast("Schon im Besitz." if item.startswith("imp:") else "Schon auf Maximum.")
+            self.rpg_sfx("rpg_locked")
+        elif item in ("potion", "bomb") and r["potions" if item == "potion" else "bombs"] >= 99:
+            self.rpg_toast("Du kannst nicht mehr tragen.")
+        elif r["gold"] < cost:
+            self.rpg_toast(f"Zu wenig Credits ({cost} nötig).")
+            self.rpg_sfx("rpg_locked")
+        else:
+            self.rpg_sfx("buy")
+            r["gold"] -= cost
+            if item == "potion":
+                r["potions"] += 1
+            elif item == "bomb":
+                r["bombs"] = min(99, r["bombs"] + 5)
+            elif item.startswith("imp:"):
+                self.rpg_give_implant(item[4:])
+            else:
+                r["wpn" if item == "wpn" else "arm"] += 1
+            self.rpg_toast("Gekauft!")
+            self.rpg_log({"potion": "Nano-Kit gekauft.", "bomb": "5 EMP-Bomben gekauft.",
+                          "wpn": "Neue Klinge!", "arm": "Neue Panzerung!"}.get(item, "Implantat gekauft."))
+            self.save()
+        self.rpg_refresh()
+
+    # ---------- Kampf ----------
+    def rpg_attack(self):
+        g, now = self.rpg_g, time.time()
+        if self.rpg_busy() or now < g["acd"] or now < g["kb"][2]:
+            return
+        g["acd"], g["swing0"], g["swing_hit"] = now + 0.34, now, set()
+        self.rpg_sfx("rpg_swing")
+        r = self.s["rpg"]
+        need = 0.6 if self.rpg_has("beam") else 1.0
+        if r["hp"] >= self.rpg_stats()[0] * need - 0.5 and not any(s["fr"] for s in g["shots"]):
+            fx, fy = g["face"]
+            atk = self.rpg_stats()[1]
+            self.rpg_shoot(g["x"] + fx * 14, g["y"] + fy * 14, fx * 250, fy * 250,
+                           self.rpg_dmg(atk * 0.75), "beam", True)
+            self.rpg_sfx("rpg_beam")
+
+    def rpg_shoot(self, x, y, vx, vy, dmg, kind="rock", friendly=False):
+        if not friendly:
+            self.rpg_sfx("rpg_fire" if kind == "fire" else "rpg_shot")
+        self.rpg_g["shots"].append({"x": x, "y": y, "vx": vx, "vy": vy, "dmg": dmg, "k": kind,
+                                    "fr": friendly, "t0": time.time()})
+
+    def rpg_potion(self):
+        r = self.s["rpg"]
+        if self.rpg_busy():
+            return
+        if r["potions"] > 0 and r["hp"] < self.rpg_stats()[0]:
+            r["potions"] -= 1
+            r["hp"] = min(float(self.rpg_stats()[0]), r["hp"] + 40)
+            self.rpg_toast("Nano-Kit: +4 Herzen")
+            self.rpg_sfx("rpg_potion")
+            self.rpg_log("Nano-Kit: +40 HP")
+        else:
+            self.rpg_toast("Kein Nano-Kit oder Herzen voll.")
+            self.rpg_sfx("rpg_locked")
+        self.rpg_refresh()
+
+    def rpg_bomb(self):
+        g, r = self.rpg_g, self.s["rpg"]
+        if self.rpg_busy():
+            return
+        if r["bombs"] <= 0:
+            self.rpg_toast("Keine EMP-Bomben!")
+            self.rpg_sfx("rpg_locked")
+            return
+        if len(g["bombs"]) >= 3:
+            return
+        fx, fy = g["face"]
+        now = time.time()
+        r["bombs"] -= 1
+        self.rpg_sfx("rpg_fuse")
+        g["bombs"].append({"x": clamp(g["x"] + fx * 24, 20, RPG_PW - 20),
+                           "y": clamp(g["y"] + fy * 24, 20, RPG_PH - 20), "t0": now, "fuse": now + 1.5})
+
+    def rpg_hurt(self, raw, now, sx, sy, src=None):
+        g, r = self.rpg_g, self.s["rpg"]
+        if now < g["hurt"] or g["over"]:
+            return
+        if self.rpg_has("aegis") and not g["aegis"]:
+            g["aegis"], g["hurt"] = True, now + 0.7
+            g["fx"].append({"k": "spark", "x": g["x"], "y": g["y"], "t0": now, "d": 0.3, "r": 16})
+            self.rpg_toast("AEGIS blockt den Treffer!")
+            self.rpg_sfx("rpg_aegis")
+            return
+        dmg = max(1, int(raw) + random.randint(-1, 1) - self.rpg_stats()[2])
+        if self.rpg_mut() == "glass":
+            dmg = int(dmg * 1.5)
+        r["hp"] -= dmg
+        g["hurt"] = now + 1.0
+        if src is not None and self.rpg_has("thorn") and src in g["mons"]:
+            self.rpg_hit_mon(src, self.rpg_dmg(self.rpg_stats()[1] * 0.8), now, g["x"], g["y"], "bomb")
+        vx, vy = g["x"] - sx, g["y"] - sy
+        d = math.hypot(vx, vy) or 1.0
+        g["kb"] = (vx / d * 230, vy / d * 230, now + 0.16)
+        g["fx"].append({"k": "hit", "x": g["x"], "y": g["y"], "t0": now, "d": 0.25, "r": 14})
+        self.rpg_sfx("rpg_hurt")
+        if r["hp"] <= 0:
+            r["hp"] = 0.0
+            g["over"] = now + 2.4
+            g["keys"].clear()
+            self.rpg_sfx("rpg_death")
+
+    def rpg_hit_mon(self, m, dmg, now, sx, sy, kind="sword"):
+        g = self.rpg_g
+        if now < m["inv"]:
+            return False
+        dx, dy = m["x"] - sx, m["y"] - sy
+        d = math.hypot(dx, dy) or 1.0
+        if m["shield"] and kind != "bomb":
+            fx, fy = m["dir"]
+            if (-dx / d) * fx + (-dy / d) * fy > 0.35:            # Angriff gegen den Schild
+                g["fx"].append({"k": "spark", "x": m["x"] + fx * m["r"], "y": m["y"] + fy * m["r"],
+                                "t0": now, "d": 0.25, "r": 10})
+                m["inv"] = now + 0.15
+                self.rpg_sfx("clink")
+                if kind == "sword":
+                    g["kb"] = (-dx / d * 170, -dy / d * 170, now + 0.1)
+                return False
+        m["hp"] -= dmg
+        m["flash"] = m["inv"] = now + 0.12
+        self.rpg_sfx("hit")
+        if not m["boss"]:
+            m["kx"], m["ky"], m["ku"] = dx / d * 210, dy / d * 210, now + 0.14
+        if m["hp"] <= 0:
+            self.rpg_kill(m, now)
+        return True
+
+    def rpg_drop(self, x, y, kind, value=0, life=12.0):
+        self.rpg_g["drops"].append({"k": kind, "x": x, "y": y, "v": value, "t0": time.time(), "life": life})
+
+    def rpg_cut_bush(self, c, r, now):
+        g = self.rpg_g
+        g["room"]["tiles"][r][c] = "."
+        g["dirty"] = True
+        x, y = (c + 0.5) * RPG_T, (r + 0.5) * RPG_T
+        g["fx"].append({"k": "leaf", "x": x, "y": y, "t0": now, "d": 0.35, "r": 14})
+        self.rpg_sfx("rpg_cut")
+        roll, f = random.random(), self.s["rpg"]["floor"]
+        if roll < 0.30:
+            self.rpg_drop(x, y, "gem", max(1, int((4 + 2 * f) // 3 * (1.5 if self.rpg_has("luck") else 1.0))))
+        elif roll < 0.42 and self.rpg_mut() != "lean":
+            self.rpg_drop(x, y, "heart")
+        elif roll < 0.50 and self.s["rpg"]["bombs"] < 99:
+            self.rpg_drop(x, y, "bomb")
+
+    def rpg_win(self, m):
+        r, f = self.s["rpg"], m["f"]
+        k = 2 if m["boss"] else 1
+        xp = (8 + f * 3) * k
+        r["xp"] += xp
+        r["wins"] += 1
+        self.rpg_log(f"{m['name']} besiegt! +{xp} XP")
+        bonus = 3 if m["boss"] else 0
+        while r["xp"] >= 25 * r["lvl"] and r["lvl"] < RPG_KEYS["lvl"][1]:
+            r["xp"] -= 25 * r["lvl"]
+            r["lvl"] += 1
+            r["hp"] = float(self.rpg_stats()[0])
+            bonus += 2
+            self.rpg_log(f"LEVEL {r['lvl']}! Herzen voll.")
+            self.rpg_toast(f"LEVEL {r['lvl']}!", 2.2)
+            self.rpg_sfx("upgrade")
+        if bonus:
+            self.add_points(bonus, announce=False)
+        self.quest_event("game")
+
+    def rpg_kill(self, m, now):
+        g, r = self.rpg_g, self.s["rpg"]
+        if m in g["mons"]:
+            g["mons"].remove(m)
+        g["fx"].append({"k": "puff", "x": m["x"], "y": m["y"], "t0": now, "d": 0.45, "r": m["r"] + 6})
+        self.rpg_win(m)
+        mut = self.rpg_mut()
+        cm = (1.5 if self.rpg_has("luck") else 1.0) * (1.25 if mut == "surge" else 1.0) * (2.0 if mut == "lean" else 1.0)
+        f, base = m["f"], int((4 + 2 * m["f"]) * cm)
+        if self.rpg_has("vamp"):
+            r["hp"] = min(float(self.rpg_stats()[0]), r["hp"] + 5)
+        self.rpg_sfx("rpg_victory" if m["boss"] else "kill")
+        if m["boss"]:
+            for i in range(3):
+                self.rpg_drop(m["x"] + (i - 1) * 24, m["y"] + 20, "gem", base * 3, 30.0)
+            dun = g["dun"]
+            dun["boss_done"] = True
+            r["floor"] = min(RPG_KEYS["floor"][1], r["floor"] + 1)
+            r["best"] = max(r["best"], r["floor"])
+            self.rpg_drop(RPG_PW / 2, RPG_PH / 2 + 10, "hc", 0, None)
+            self.rpg_log(f"{m['name']} besiegt! Node {dun['f']} geschafft.")
+            self.rpg_talk("NOVA", [f"{m['name']} ist offline!", "Ein Herzcontainer materialisiert sich..."],
+                          after=lambda: self.rpg_offer_implants("BOSS-BELOHNUNG"))
+            self.save()
+        elif m["elite"]:
+            self.rpg_drop(m["x"], m["y"], "gem", base * 4)
+            if mut != "lean":
+                self.rpg_drop(m["x"] + 14, m["y"], "heart")
+        else:
+            roll = random.random()
+            bonus = 0.1 if self.rpg_has("luck") else 0.0
+            if roll < 0.40 + bonus:
+                mult = random.choices((1, 3, 8), (70, 25, 5))[0]
+                self.rpg_drop(m["x"], m["y"], "gem", base * mult)
+            elif roll < 0.55 + bonus and mut != "lean":
+                self.rpg_drop(m["x"], m["y"], "heart")
+            elif roll < 0.62 + bonus and r["bombs"] < 99:
+                self.rpg_drop(m["x"], m["y"], "bomb")
+        if g["area"] == "dun" and not g["mons"]:
+            self.rpg_room_clear()
+        self.rpg_refresh()
+
+    def rpg_set_doors(self, frm, to):
+        g = self.rpg_g
+        t = g["room"]["tiles"]
+        for d in g["room"]["gaps"]:
+            for c, r in RPG_GAPS[d]:
+                if t[r][c] == frm:
+                    t[r][c] = to
+        g["dirty"] = True
+
+    def rpg_room_clear(self):
+        g = self.rpg_g
+        dun, pos = g["dun"], g["dpos"]
+        dun["cleared"].add(pos)
+        if g["room"]["shut"]:
+            g["room"]["shut"] = False
+            self.rpg_set_doors("Z", ".")
+            self.rpg_toast("Die Türen öffnen sich.")
+            self.rpg_sfx("rpg_door_open")
+        self.rpg_room_rewards()
+        if pos == dun["boss"] and dun["boss_done"]:
+            pass
+        self.save()
+
+    # ---------- Spielschritt ----------
+    def rpg_step(self, dt, now):
+        g, r = self.rpg_g, self.s["rpg"]
+        if g["over"]:
+            if now >= g["over"]:                       # Game Over: zurück ins Dorf
+                r["gold"] //= 2
+                r["hp"] = self.rpg_stats()[0] / 2
+                vx, vy = rpg_roles(r["seed"])["village"]
+                g.update(over=0.0, area="over", ox=vx, oy=vy, dun=None, dpos=None, x=7.0 * RPG_T,
+                         y=6.5 * RPG_T, face=(0, 1), skeys=0, hurt=0.0, kb=(0.0, 0.0, 0.0), dlg=None,
+                         pick=None)
+                self.rpg_build_room(now)
+                self.rpg_log("Besiegt! Credits halbiert, Rückkehr ins Dorf.")
+                self.save()
+            return
+        fd = g["fade"]
+        if fd:
+            if not fd["done"] and now - fd["t0"] >= fd["dur"] / 2:
+                fd["done"] = True
+                fd["action"]()
+            if now - fd["t0"] >= fd["dur"]:
+                g["fade"] = None
+            return
+        tr = g["trans"]
+        if tr:
+            if now - tr["t0"] >= tr["dur"]:
+                g["trans"] = None
+                c = self.rpg_ui["cv"]
+                c.addtag_withtag("room", "rnew")
+                c.dtag("rnew")
+            return
+        if g["dlg"] or g["pick"]:
+            return
+        self.rpg_move_player(dt, now)
+        if self.rpg_check_edges(now):
+            return
+        self.rpg_check_tiles(now)
+        if g["fade"]:
+            return
+        self.rpg_update_mons(dt, now)
+        if g["over"]:
+            return
+        self.rpg_update_shots(dt, now)
+        self.rpg_update_bombs(now)
+        self.rpg_update_drops(now)
+        self.rpg_sword_hits(now)
+        g["fx"] = [e for e in g["fx"] if now - e["t0"] < e["d"]]
+        room = g["room"]
+        if g["area"] == "dun" and not room["shut"] and g["dpos"] not in g["dun"]["cleared"] and g["mons"]:
+            if 48 <= g["x"] <= RPG_PW - 48 and 48 <= g["y"] <= RPG_PH - 48:
+                room["shut"] = True
+                self.rpg_set_doors(".", "Z")
+                self.rpg_toast("Die Türen schließen sich!")
+                self.rpg_sfx("rpg_door_shut")
+
+    def rpg_try_move(self, ddx, ddy):
+        g = self.rpg_g
+        if ddx and not self.rpg_blocked(g["x"] + ddx, g["y"], 8, "p"):
+            g["x"] += ddx
+        if ddy and not self.rpg_blocked(g["x"], g["y"] + ddy, 8, "p"):
+            g["y"] += ddy
+
+    def rpg_move_player(self, dt, now):
+        g, k = self.rpg_g, self.rpg_g["keys"]
+        if now < g["kb"][2]:
+            self.rpg_try_move(g["kb"][0] * dt, g["kb"][1] * dt)
+            return
+        if now < g["swing0"] + 0.24:
+            return
+        dx = ("d" in k or "Right" in k) - ("a" in k or "Left" in k)
+        dy = ("s" in k or "Down" in k) - ("w" in k or "Up" in k)
+        if not (dx or dy):
+            return
+        if dx and not dy:
+            g["face"] = (dx, 0)
+        elif dy and not dx:
+            g["face"] = (0, dy)
+        elif g["face"] not in ((dx, 0), (0, dy)):
+            g["face"] = (dx, 0)
+        n = math.hypot(dx, dy)
+        g["walk"] += dt
+        sp = 108 * (1.2 if self.rpg_has("servo") else 1.0)
+        self.rpg_try_move(dx / n * sp * dt, dy / n * sp * dt)
+
+    def rpg_neighbor(self, d):
+        g = self.rpg_g
+        if g["area"] == "over":
+            nx, ny = g["ox"] + d[0], g["oy"] + d[1]
+            return (nx, ny) if 0 <= nx < 3 and 0 <= ny < 3 else None
+        if g["area"] == "dun":
+            pos = g["dpos"]
+            n = (pos[0] + d[0], pos[1] + d[1])
+            return n if frozenset((pos, n)) in g["dun"]["edges"] else None
+        return None
+
+    def rpg_check_edges(self, now):
+        g = self.rpg_g
+        x, y = g["x"], g["y"]
+        d = None
+        if x < 12:
+            d = (-1, 0)
+        elif x > RPG_PW - 12:
+            d = (1, 0)
+        elif y < 12:
+            d = (0, -1)
+        elif y > RPG_PH - 12:
+            d = (0, 1)
+        if d is None:
+            return False
+        nb = self.rpg_neighbor(d)
+        if nb is None:
+            g["x"], g["y"] = clamp(x, 14, RPG_PW - 14), clamp(y, 14, RPG_PH - 14)
+            return False
+        if d[0]:
+            g["x"] = RPG_PW - 14 if d[0] < 0 else 14
+        if d[1]:
+            g["y"] = RPG_PH - 14 if d[1] < 0 else 14
+        if g["area"] == "over":
+            g["ox"], g["oy"] = nb
+        else:
+            g["dpos"] = nb
+        self.rpg_build_room(now)
+        g["dirty"] = False
+        self.rpg_draw_room(self.rpg_ui["cv"], g["room"], d[0] * RPG_PW, RPG_HUD + d[1] * RPG_PH, "rnew")
+        g["trans"] = {"t0": now, "dur": 0.45, "d": d, "pa": 0.0}
+        self.rpg_sfx("rpg_scroll")
+        return True
+
+    def rpg_check_tiles(self, now):
+        g = self.rpg_g
+        c, r = int(g["x"] // RPG_T), int(g["y"] // RPG_T)
+        if not (0 <= c < RPG_COLS and 0 <= r < RPG_ROWS):
+            return
+        ch = g["room"]["tiles"][r][c]
+        if ch == "D":
+            self.rpg_fade(now, lambda: self.rpg_enter_dungeon(c, r))
+        elif ch == "E" and (c, r) in g["room"]["doors"]:
+            did = g["room"]["doors"][(c, r)]
+            self.rpg_fade(now, lambda: self.rpg_enter_interior(did, c, r))
+        elif ch == "F":
+            self.rpg_fade(now, self.rpg_exit_area)
+
+    def rpg_fade(self, now, action):
+        self.rpg_g["fade"] = {"t0": now, "dur": 0.4, "action": action, "done": False}
+        self.rpg_sfx("rpg_portal")
+
+    def rpg_enter_dungeon(self, c, r):
+        g, rp, T = self.rpg_g, self.s["rpg"], RPG_T
+        dun = rpg_gen_dungeon(rp["floor"], rp["seed"])
+        g.update(area="dun", dun=dun, dpos=dun["start"], skeys=0, x=7 * T, y=7.5 * T, face=(0, -1))
+        g["ret"] = {"kind": "dun", "ox": g["ox"], "oy": g["oy"], "c": c, "r": r}
+        self.rpg_build_room(time.time())
+        name = RPG_DTHEMES[dun["theme"]]["name"]
+        self.rpg_log(f"Node {dun['f']} betreten: {name}.")
+        if dun["mut"]:
+            self.rpg_log(f"Mutator: {RPG_MUTATORS[dun['mut']][0]} – {RPG_MUTATORS[dun['mut']][1]}")
+            self.rpg_talk("SYSTEM", [f"NODE {dun['f']} · {name}",
+                                     f"MUTATOR: {RPG_MUTATORS[dun['mut']][0]}", RPG_MUTATORS[dun["mut"]][1]])
+        else:
+            self.rpg_toast(f"NODE {dun['f']} · {name}", 2.4)
+
+    def rpg_enter_interior(self, did, c, r):
+        g, T = self.rpg_g, RPG_T
+        g.update(area="in", ret={"kind": did, "c": c, "r": r}, x=7 * T, y=7.5 * T, face=(0, -1))
+        self.rpg_build_room(time.time())
+
+    def rpg_exit_area(self):
+        g, T = self.rpg_g, RPG_T
+        ret = g["ret"] or {"ox": g["ox"], "oy": g["oy"], "c": 7, "r": 5}
+        if g["area"] == "dun":
+            if g["dun"]["boss_done"]:
+                self.rpg_new_world()
+                return
+            g.update(ox=ret["ox"], oy=ret["oy"], dun=None, dpos=None)
+            self.rpg_log("Node verlassen.")
+        g.update(area="over", x=(ret["c"] + 0.5) * T, y=(ret["r"] + 1.5) * T, face=(0, 1))
+        self.rpg_build_room(time.time())
+        self.save()
+
+    def rpg_new_world(self):
+        """Nach einem Boss würfelt sich das Netz neu: neuer Seed, neue Orte, neue Verstecke."""
+        g, r = self.rpg_g, self.s["rpg"]
+        r["seed"] = random.randint(1, 999999)
+        r["flags"] = 0
+        vx, vy = rpg_roles(r["seed"])["village"]
+        g.update(area="over", ox=vx, oy=vy, dun=None, dpos=None, x=7.0 * RPG_T, y=6.5 * RPG_T,
+                 face=(0, 1), skeys=0, ret=None)
+        self.rpg_build_room(time.time())
+        self.rpg_log("Das Netz hat sich neu gewürfelt!")
+        self.rpg_sfx("reboot")
+        self.rpg_talk("SYSTEM", ["NETZ-RESET ABGESCHLOSSEN.", "Gate, Höhlen und Verstecke liegen jetzt woanders. "
+                                 "Frag den Netrunner nach dem Weg."])
+        self.save()
+
+    # ---------- Gegner ----------
+    def rpg_pick_dir(self, m, dx, dy, chase=0.5):
+        if random.random() < chase:
+            return ((1 if dx > 0 else -1), 0) if abs(dx) > abs(dy) else (0, (1 if dy > 0 else -1))
+        return random.choice(RPG_DIRS)
+
+    def rpg_mon_move(self, m, vx, vy, dt):
+        mv = "f" if m["fly"] else "e"
+        hs = max(6, m["r"] - 3)
+        okx = oky = False
+        if vx:
+            nx = m["x"] + vx * dt
+            if not self.rpg_blocked(nx, m["y"], hs, mv):
+                m["x"], okx = nx, True
+        if vy:
+            ny = m["y"] + vy * dt
+            if not self.rpg_blocked(m["x"], ny, hs, mv):
+                m["y"], oky = ny, True
+        return okx or oky
+
+    def rpg_update_mons(self, dt, now):
+        g = self.rpg_g
+        px, py = g["x"], g["y"]
+        for m in list(g["mons"]):
+            if m not in g["mons"]:
+                continue
+            if now >= m["start"]:
+                if now < m["ku"]:
+                    self.rpg_mon_move(m, m["kx"], m["ky"], dt)
+                elif now >= m["stun"]:
+                    self.rpg_mon_ai(m, now, dt, px, py)
+                if m["boss"]:
+                    m["tt"] += dt
+                    if m["tt"] > 0.06:
+                        m["tt"] = 0.0
+                        m["trail"] = (m["trail"] + [(m["x"], m["y"])])[-16:]
+            if (now >= m["start"] and now >= g["hurt"]
+                    and math.hypot(m["x"] - px, m["y"] - py) < m["r"] + 7):
+                self.rpg_hurt(m["atk"], now, m["x"], m["y"], m)
+                if g["over"]:
+                    return
+
+    def rpg_mon_ai(self, m, now, dt, px, py):
+        t, mx, my = m["type"], m["x"], m["y"]
+        dx, dy = px - mx, py - my
+        dist = math.hypot(dx, dy) or 1.0
+        sp = m["spd"]
+        if t == "slime":
+            if m["state"] == "hop":
+                self.rpg_mon_move(m, m["vx"], m["vy"], dt)
+                if now >= m["until"]:
+                    m["state"], m["next"] = "idle", now + random.uniform(0.45, 1.0)
+            elif now >= m["next"]:
+                ang = (math.atan2(dy, dx) + random.uniform(-0.5, 0.5)) if random.random() < 0.7 \
+                    else random.uniform(0, math.tau)
+                m["vx"], m["vy"] = math.cos(ang) * sp, math.sin(ang) * sp
+                m["state"], m["until"] = "hop", now + 0.38
+        elif t == "octo":
+            if m["state"] == "idle":
+                if not self.rpg_mon_move(m, m["dir"][0] * sp, m["dir"][1] * sp, dt):
+                    m["dir"] = self.rpg_pick_dir(m, dx, dy)
+                if now >= m["next"]:
+                    m["dir"] = self.rpg_pick_dir(m, dx, dy, 0.6)
+                    m["state"], m["until"] = "aim", now + 0.45
+            elif now >= m["until"]:
+                fx, fy = m["dir"]
+                self.rpg_shoot(mx + fx * m["r"], my + fy * m["r"], fx * 150, fy * 150, m["atk"] * 0.8)
+                m["state"], m["next"] = "idle", now + random.uniform(0.9, 1.7)
+        elif t == "bat":
+            if now >= m["next"]:
+                ang = (math.atan2(dy, dx) + random.uniform(-0.7, 0.7)) if random.random() < 0.55 \
+                    else random.uniform(0, math.tau)
+                m["vx"], m["vy"] = math.cos(ang) * sp, math.sin(ang) * sp
+                m["next"] = now + random.uniform(0.5, 1.1)
+            if not self.rpg_mon_move(m, m["vx"], m["vy"], dt):
+                m["next"] = 0.0
+        elif t == "wolf":
+            st = m["state"]
+            if st == "idle":
+                if not self.rpg_mon_move(m, m["dir"][0] * sp, m["dir"][1] * sp, dt) or now >= m["next"]:
+                    m["dir"] = self.rpg_pick_dir(m, dx, dy)
+                    m["next"] = now + random.uniform(0.8, 1.6)
+                if dist < 230 and now >= m["cool"]:
+                    cd = None
+                    if abs(dy) < 16:
+                        cd = (1 if dx > 0 else -1, 0)
+                    elif abs(dx) < 16:
+                        cd = (0, 1 if dy > 0 else -1)
+                    if cd:
+                        m["cdir"], m["state"], m["until"] = cd, "wind", now + 0.4
+            elif st == "wind":
+                m["dir"] = m["cdir"]
+                if now >= m["until"]:
+                    m["state"], m["until"] = "charge", now + 1.1
+            elif st == "charge":
+                if not self.rpg_mon_move(m, m["cdir"][0] * 215, m["cdir"][1] * 215, dt) or now >= m["until"]:
+                    m["state"], m["stun"], m["cool"], m["next"] = "idle", now + 0.7, now + 1.4, now + 0.5
+        elif t == "golem":
+            if now >= m["next"]:
+                m["dir"] = self.rpg_pick_dir(m, dx, dy, 0.8)
+                m["next"] = now + random.uniform(0.7, 1.4)
+            self.rpg_mon_move(m, m["dir"][0] * sp, m["dir"][1] * sp, dt)
+        elif t == "drache":
+            half = m["hp"] < m["max"] * 0.5
+            self.rpg_mon_move(m, 0, clamp(py - my, -1, 1) * 55, dt)
+            m["dir"] = (-1, 0) if px < mx else (1, 0)
+            if m["state"] == "idle" and now >= m["next"]:
+                m["state"], m["until"] = "breath", now + 0.55
+            elif m["state"] == "breath" and now >= m["until"]:
+                m["state"], m["next"] = "idle", now + (1.7 if half else 2.5)
+                n, base = (5 if half else 3), math.atan2(dy, dx)
+                for i in range(n):
+                    a = base + (i - (n - 1) / 2) * 0.32
+                    self.rpg_shoot(mx, my, math.cos(a) * 150, math.sin(a) * 150, m["atk"] * 0.8, "fire")
+        elif t == "wurm":
+            v = sp * (1.35 if m["hp"] < m["max"] * 0.5 else 1.0)
+            hs = m["r"] - 3
+            nx = mx + m["vx"] * v * dt
+            if self.rpg_blocked(nx, my, hs, "f"):
+                m["vx"] = -m["vx"]
+            else:
+                m["x"] = nx
+            ny = my + m["vy"] * v * dt
+            if self.rpg_blocked(m["x"], ny, hs, "f"):
+                m["vy"] = -m["vy"]
+            else:
+                m["y"] = ny
+        elif t == "koloss":
+            st = m["state"]
+            if st == "idle":
+                if now >= m["next"]:
+                    m["dir"] = self.rpg_pick_dir(m, dx, dy, 0.9)
+                    m["next"] = now + 0.5
+                self.rpg_mon_move(m, m["dir"][0] * sp, m["dir"][1] * sp, dt)
+                if now >= m["cool"] and dist < 260:
+                    m["cdir"] = self.rpg_pick_dir(m, dx, dy, 1.0)
+                    m["dir"], m["state"], m["until"] = m["cdir"], "wind", now + 0.9
+            elif st == "wind":
+                if now >= m["until"]:
+                    m["state"], m["until"] = "charge", now + 1.6
+            elif st == "charge":
+                if not self.rpg_mon_move(m, m["cdir"][0] * 230, m["cdir"][1] * 230, dt) or now >= m["until"]:
+                    m["state"], m["stun"], m["cool"] = "idle", now + 1.5, now + 2.8
+                    for i in range(8):
+                        a = i * math.tau / 8
+                        self.rpg_shoot(m["x"], m["y"], math.cos(a) * 110, math.sin(a) * 110,
+                                       m["atk"] * 0.6, "fire")
+                    self.rpg_g["fx"].append({"k": "boom", "x": m["x"], "y": m["y"], "t0": now,
+                                             "d": 0.4, "r": 40})
+                    self.rpg_sfx("thud_hard")
+
+    def rpg_update_shots(self, dt, now):
+        g, T = self.rpg_g, RPG_T
+        tiles = g["room"]["tiles"]
+        for s in list(g["shots"]):
+            s["x"] += s["vx"] * dt
+            s["y"] += s["vy"] * dt
+            c, r = int(s["x"] // T), int(s["y"] // T)
+            out = not (0 <= c < RPG_COLS and 0 <= r < RPG_ROWS)
+            wall = (not out) and tiles[r][c] in RPG_SOLID and tiles[r][c] != "W"
+            if out or wall or now - s["t0"] > 4:
+                g["shots"].remove(s)
+                if wall:
+                    g["fx"].append({"k": "spark", "x": s["x"], "y": s["y"], "t0": now, "d": 0.2, "r": 7})
+                continue
+            if s["fr"]:
+                for m in g["mons"]:
+                    if math.hypot(m["x"] - s["x"], m["y"] - s["y"]) < m["r"] + 5:
+                        self.rpg_hit_mon(m, s["dmg"], now, s["x"] - s["vx"] * 0.05, s["y"] - s["vy"] * 0.05, "beam")
+                        g["shots"].remove(s)
+                        break
+            elif now >= g["hurt"] and math.hypot(g["x"] - s["x"], g["y"] - s["y"]) < 12:
+                g["shots"].remove(s)
+                self.rpg_hurt(s["dmg"], now, s["x"], s["y"])
+                if g["over"]:
+                    return
+
+    def rpg_update_bombs(self, now):
+        g, T = self.rpg_g, RPG_T
+        tiles = g["room"]["tiles"]
+        for b in list(g["bombs"]):
+            if now < b["fuse"]:
+                continue
+            g["bombs"].remove(b)
+            R = 80 if self.rpg_has("emp") else 58
+            self.rpg_sfx("rpg_boom")
+            g["fx"].append({"k": "boom", "x": b["x"], "y": b["y"], "t0": now, "d": 0.45, "r": R})
+            atk = self.rpg_stats()[1]
+            for m in list(g["mons"]):
+                if math.hypot(m["x"] - b["x"], m["y"] - b["y"]) < R + m["r"]:
+                    self.rpg_hit_mon(m, atk * 3 + 8, now, b["x"], b["y"], "bomb")
+            for rr in range(RPG_ROWS):
+                for cc in range(RPG_COLS):
+                    if math.hypot((cc + 0.5) * T - b["x"], (rr + 0.5) * T - b["y"]) < R + 10:
+                        if tiles[rr][cc] == "B":
+                            self.rpg_cut_bush(cc, rr, now)
+                        elif tiles[rr][cc] == "X":
+                            tiles[rr][cc] = "E"
+                            g["dirty"] = True
+                            self.rpg_toast("Ein Geheimgang!", 2.2)
+                            self.rpg_sfx("rpg_unlock")
+
+    def rpg_update_drops(self, now):
+        g, r = self.rpg_g, self.s["rpg"]
+        for d in list(g["drops"]):
+            if d["life"] and now - d["t0"] > d["life"]:
+                g["drops"].remove(d)
+                continue
+            dd = math.hypot(d["x"] - g["x"], d["y"] - g["y"])
+            if self.rpg_has("mag") and 16 < dd < 90 and d["k"] != "hc":
+                d["x"] += (g["x"] - d["x"]) / dd * 3.2
+                d["y"] += (g["y"] - d["y"]) / dd * 3.2
+            if dd > 16:
+                continue
+            k = d["k"]
+            self.rpg_sfx({"heart": "rpg_heart", "hc": "rpg_hc"}.get(k, "rpg_gem"))
+            if k == "gem":
+                r["gold"] = min(RPG_KEYS["gold"][1], r["gold"] + d["v"])
+                self.rpg_toast(f"+{d['v']} Credits", 1.0)
+            elif k == "heart":
+                r["hp"] = min(float(self.rpg_stats()[0]), r["hp"] + 10)
+            elif k == "bomb":
+                r["bombs"] = min(99, r["bombs"] + 1)
+                self.rpg_toast("+1 EMP-Bombe", 1.0)
+            elif k == "hc":
+                r["hearts"] += 1
+                r["hp"] = float(self.rpg_stats()[0])
+                self.add_points(5, announce=False)
+                self.rpg_talk("NOVA", ["HERZCONTAINER!", "Deine maximalen Herzen steigen um 1."])
+                self.rpg_log("Herzcontainer! Max. Herzen +1.")
+                self.save()
+            g["drops"].remove(d)
+            self.rpg_refresh()
+
+    def rpg_sword_hits(self, now):
+        g = self.rpg_g
+        dt = now - g["swing0"]
+        if dt < 0.04 or dt > 0.2:
+            return
+        atk = self.rpg_stats()[1]
+        fx, fy = g["face"]
+        for m in list(g["mons"]):
+            if id(m) in g["swing_hit"]:
+                continue
+            vx, vy = m["x"] - g["x"], m["y"] - g["y"]
+            d = math.hypot(vx, vy) or 1.0
+            if d <= 36 + m["r"] and (vx * fx + vy * fy) / d > 0.2:
+                g["swing_hit"].add(id(m))
+                self.rpg_hit_mon(m, self.rpg_dmg(max(1, atk + random.randint(-2, 2))), now, g["x"], g["y"])
+        tiles, a0 = g["room"]["tiles"], math.atan2(fy, fx)
+        for off in (-0.6, 0.0, 0.6):
+            for dist in (20, 32):
+                c = int((g["x"] + math.cos(a0 + off) * dist) // RPG_T)
+                r = int((g["y"] + math.sin(a0 + off) * dist) // RPG_T)
+                if 0 <= c < RPG_COLS and 0 <= r < RPG_ROWS and tiles[r][c] == "B":
+                    self.rpg_cut_bush(c, r, now)
+
+    # ---------- Zeichnen (Cyberpunk) ----------
+    def rpg_draw_room(self, c, room, ox, oy, tag):
+        tiles, theme = room["tiles"], room["theme"]
+        dt = RPG_DTHEMES[room.get("dt", 0)]
+        for row in range(RPG_ROWS):
+            for col in range(RPG_COLS):
+                self.rpg_draw_tile(c, tiles[row][col], col, row, ox, oy, theme, tag, dt)
+        c.tag_lower(tag)
+
+    def rpg_draw_tile(self, c, ch, col, row, ox, oy, theme, tag, dt):
+        T, P = RPG_T, RPG_PAL
+        x, y = ox + col * T, oy + row * T
+        R = lambda a, b, d, e, fill, out="": c.create_rectangle(x + a, y + b, x + d, y + e, fill=fill,
+                                                                 outline=out, tags=tag)
+        O = lambda a, b, d, e, fill, out="": c.create_oval(x + a, y + b, x + d, y + e, fill=fill,
+                                                            outline=out, tags=tag)
+        L = lambda pts, col_, w=1: c.create_line(*[(x + v if i % 2 == 0 else y + v) for i, v in enumerate(pts)],
+                                                 fill=col_, width=w, tags=tag)
+        h = (col * 73 + row * 151 + col * row * 7) % 17
+        neon = (P["mag"], P["cyan"], P["yel"])[(col * 3 + row * 5) % 3]
+        if theme == "dun":
+            R(0, 0, T, T, dt["floor"])
+            if (col + row) % 2:
+                R(1, 1, T - 1, T - 1, dt["floor_l"])
+            dim = rpg_mix(dt["neon"], dt["floor"], 0.7)
+            if h in (0, 7):
+                R(3, 15, 14, 16, dim); R(13, 15, 14, 25, dim); O(11, 24, 17, 30, dt["neon"])
+        elif theme == "in":
+            R(0, 0, T, T, P["ifloor"] if (col + row) % 2 else P["ifloor_l"])
+            R(0, T - 1, T, T, rpg_mix(P["mag"], P["ifloor"], 0.75))
+        else:
+            R(0, 0, T, T, P["g1"] if (col + row) % 2 else P["g2"])
+            if ch == "." and h == 0:
+                R(6, 15, 24, 16, rpg_mix(P["cyan"], P["g1"], 0.65)); O(22, 13, 27, 18, rpg_mix(P["cyan"], P["g1"], 0.4))
+            elif ch == "." and h == 5:
+                O(5, 11, 26, 21, "#14213d"); O(8, 13, 18, 17, "#1f3f66")
+            elif ch == "." and h == 9:
+                R(14, 14, 17, 17, rpg_mix(P["mag"], P["g1"], 0.4))
+        if ch == ",":
+            R(0, 0, T, T, P["path"]); R(0, 0, T, 2, P["path_l"]); R(0, T - 2, T, T, P["path_l"])
+            if h % 2 == 0:
+                R(6, 15, 18, 17, rpg_mix(P["cyan"], P["path"], 0.55))
+        elif ch == "T":
+            R(0, 0, T, T, P["dark"]); R(2, 0, T - 2, T, P["roof"])
+            for wx in (6, 14, 22):
+                for wy in (7, 15, 23):
+                    k = (h * wx + wy + col * 3) % 7
+                    lit = (P["yel"], P["cyan"], P["mag"], "#1b1830", "#1b1830", "#1b1830", P["yel"])[k]
+                    R(wx, wy, wx + 4, wy + 5, lit)
+            R(0, 0, T, 3, neon)
+        elif ch == "R":
+            R(1, 7, T - 1, T - 3, P["metal"]); R(1, 7, T - 1, 10, P["metal_l"])
+            for k in range(0, T - 4, 10):
+                R(3 + k, 12, 8 + k, T - 5, "#e8c21a")
+        elif ch == "X":
+            R(1, 7, T - 1, T - 3, P["metal"]); R(1, 7, T - 1, 10, P["metal_l"])
+            L([8, 8, 14, 16, 9, 21, 17, 27], P["cyan"], 2); R(18, 12, 20, 14, P["yel"])
+        elif ch == "W":
+            R(0, 0, T, T, P["water"])
+            R(4, 8 + (h % 3) * 4, 16, 10 + (h % 3) * 4, P["water_l"]); R(18, 22, 28, 24, rpg_mix(P["water_l"], P["water"], 0.4))
+        elif ch == "B":
+            O(1, 5, T - 1, T - 1, "#120f1d")
+            L([4, 24, 10, 10, 15, 22, 21, 8, 28, 22], P["mag"], 2)
+            L([6, 26, 12, 14, 18, 25, 25, 12], P["cyan"], 2)
+            R(15, 12, 18, 15, P["yel"])
+        elif ch == "H":
+            R(0, 0, T, T, P["wall"]); R(0, 0, T, 12, P["roof"]); R(0, 11, T, 13, neon)
+            R(5, 17, 12, 25, P["yel"] if h % 2 else P["cyan"]); R(20, 17, 27, 25, "#1b1830")
+        elif ch == "P":
+            R(2, 1, T - 2, T - 1, "#0e0d18", P["metal_l"])
+            for k in range(4):
+                R(5, 4 + k * 7, T - 5, 8 + k * 7, "#06060c")
+                O(7, 5 + k * 7, 10, 7 + k * 7, P["grn"] if (h + k) % 3 else P["red"])
+                R(14, 5 + k * 7, 24, 6 + k * 7, "#242246")
+        elif ch == "#":
+            if theme == "in":
+                R(0, 0, T, T, P["iwall"]); R(0, 0, T, 3, P["iwall_l"]); R(0, T - 2, T, T, rpg_mix(P["cyan"], P["iwall"], 0.7))
+            else:
+                R(0, 0, T, T, dt["wall"]); R(0, 10, T, 11, dt["wall_l"]); R(0, 21, T, 22, dt["wall_l"])
+                R(8, 0, 9, 10, dt["wall_l"]); R(22, 11, 23, 21, dt["wall_l"]); R(12, 22, 13, T, dt["wall_l"])
+                if h % 3 == 0:
+                    R(3, T - 3, T - 3, T - 1, rpg_mix(dt["neon"], dt["wall"], 0.25))
+        elif ch == "L":
+            R(0, 0, T, T, dt["wall"]); R(3, 3, T - 3, T - 3, "#0a0508", P["red"])
+            R(11, 14, 21, 25, P["red"]); R(13, 8, 15, 15, P["red"]); R(17, 8, 19, 15, P["red"]); R(13, 8, 19, 10, P["red"]); R(15, 18, 17, 22, "#0a0508")
+        elif ch == "Z":
+            R(0, 0, T, T, "#0a0508")
+            for k in (6, 14, 22):
+                R(k - 1, 0, k + 3, T, rpg_mix(P["red"], "#0a0508", 0.55)); R(k, 0, k + 2, T, P["red"])
+            R(0, 15, T, 17, rpg_mix(P["red"], "#0a0508", 0.3))
+        elif ch == "s":
+            R(14, 16, 18, 30, P["metal"]); R(3, 3, 29, 19, "#06242b", P["cyan"])
+            R(7, 8, 25, 10, P["cyan"]); R(7, 13, 19, 15, P["mag"])
+        elif ch == "D":
+            R(0, 0, T, T, "#0b0714"); O(1, 1, T - 1, T - 1, P["mag"]); O(4, 4, T - 4, T - 4, "#12071f")
+            O(8, 8, T - 8, T - 8, rpg_mix(P["mag"], "#12071f", 0.4)); O(12, 12, T - 12, T - 12, P["cyan"])
+        elif ch == "E":
+            R(0, 0, T, T, P["door"]); R(0, 0, T, 2, P["cyan"]); R(0, 0, 2, T, P["cyan"]); R(T - 2, 0, T, T, P["cyan"])
+            R(5, 4, T - 5, T, "#0b0b1c"); R(7, 6, T - 7, 8, rpg_mix(P["cyan"], "#0b0b1c", 0.5))
+        elif ch == "F":
+            R(0, 0, T, T, "#06060e"); O(2, 2, T - 2, T - 2, P["cyan"]); O(5, 5, T - 5, T - 5, "#06060e")
+            O(9, 9, T - 9, T - 9, rpg_mix(P["cyan"], "#06060e", 0.35))
+
+    def rpg_draw_icon(self, c, kind, x, y):
+        P = RPG_PAL
+        R = lambda a, b, d, e, fill, out="": c.create_rectangle(x + a, y + b, x + d, y + e, fill=fill, outline=out, tags="dyn")
+        if kind == "potion":
+            R(-3, -11, 3, -5, "#cfd8dc"); R(-7, -5, 7, 9, P["cyan"]); R(-4, -2, 0, 5, "#d6fbff"); R(2, 0, 5, 3, P["mag"])
+        elif kind == "bomb":
+            c.create_oval(x - 9, y - 8, x + 9, y + 10, fill="#0a2a3a", outline=P["cyan"], width=2, tags="dyn")
+            c.create_oval(x - 3, y - 2, x + 3, y + 4, fill=P["cyan"], outline="", tags="dyn")
+            R(-1, -13, 2, -8, P["yel"])
+        elif kind == "wpn":
+            R(-3, -13, 3, 5, P["cyan"]); R(-1, -13, 1, 5, "#ffffff"); R(-7, 5, 7, 8, P["yel"]); R(-2, 8, 2, 13, P["mag"])
+        elif kind == "arm":
+            c.create_polygon(x - 10, y - 10, x + 10, y - 10, x + 9, y + 3, x, y + 13, x - 9, y + 3,
+                             fill="#2d2a4a", outline=P["mag"], width=2, tags="dyn")
+            R(-1, -8, 1, 8, P["cyan"])
+        else:   # Implantat-Chip
+            R(-9, -7, 9, 7, "#0a0912", P["yel"])
+            for k in (-6, -2, 2, 6):
+                R(k - 1, -10, k + 1, -7, P["yel"]); R(k - 1, 7, k + 1, 10, P["yel"])
+            R(-4, -3, 4, 3, P["mag"])
+
+    def rpg_draw_gem(self, c, x, y, v, f):
+        P = RPG_PAL
+        base = 4 + 2 * f
+        col = P["gem_r"] if v >= base * 8 else P["gem_b"] if v >= base * 3 else P["gem_g"]
+        c.create_rectangle(x - 6, y - 6, x + 6, y + 6, fill="#0a0912", outline=col, width=2, tags="dyn")
+        c.create_rectangle(x - 2, y - 2, x + 2, y + 2, fill=col, outline="", tags="dyn")
+
+    def rpg_shade(self):
+        return {"over": "#05040a", "dun": "#030208", "in": "#05040a"}[self.rpg_g["room"]["theme"]]
+
+    def rpg_draw_player(self, c, now):
+        g, P = self.rpg_g, RPG_PAL
+        x, y = g["x"], g["y"] + RPG_HUD
+        if g["trans"]:
+            tr = g["trans"]
+            p = clamp((now - tr["t0"]) / tr["dur"], 0.0, 1.0)
+            e = p * p * (3 - 2 * p)
+            x += tr["d"][0] * RPG_PW * (1 - e)
+            y += tr["d"][1] * RPG_PH * (1 - e)
+        if now < g["hurt"] and int(now * 14) % 2 == 0:
+            return
+        fx, fy = g["face"]
+        R = lambda a, b, d, e, fill: c.create_rectangle(x + a, y + b, x + d, y + e, fill=fill, outline="", tags="dyn")
+        c.create_oval(x - 9, y + 8, x + 9, y + 14, fill=self.rpg_shade(), outline="", tags="dyn")
+        step = int(g["walk"] * 9) % 2 if g["keys"] else 0
+        R(-6, 8 + step, -1, 12, "#0a0912"); R(1, 8 + (1 - step), 6, 12, "#0a0912")
+        R(-7, -2, 7, 9, "#1c1a2e"); R(-7, 3, 7, 5, P["cyan"]); R(-1, -2, 1, 9, P["mag"])
+        R(-9, 0, -7, 7, "#2d2a4a"); R(7, 0, 9, 7, "#2d2a4a")
+        R(-7, -12, 7, 0, "#d9b79a")
+        if fy < 0:
+            R(-8, -15, 8, -1, P["mag"])
+        else:
+            R(-8, -15, 8, -8, P["mag"]); R(-2, -18, 2, -14, P["mag"])
+            if fy > 0:
+                R(-6, -8, 6, -4, P["cyan"])
+            else:
+                R(-1 if fx > 0 else -6, -8, 6 if fx > 0 else 1, -4, P["cyan"])
+        dt = now - g["swing0"]
+        if 0 <= dt < 0.24:
+            a0 = math.atan2(fy, fx)
+            p = dt / 0.24
+            a = a0 - 1.2 + 2.4 * p
+            x1, y1 = x + math.cos(a) * 8, y + math.sin(a) * 8
+            x2, y2 = x + math.cos(a) * 34, y + math.sin(a) * 34
+            c.create_line(x1, y1, x2, y2, fill=P["cyan"], width=8, tags="dyn")
+            c.create_line(x1, y1, x2, y2, fill="#ffffff", width=3, tags="dyn")
+            c.create_line(x1, y1, x + math.cos(a) * 13, y + math.sin(a) * 13, fill=P["yel"], width=6, tags="dyn")
+            c.create_arc(x - 30, y - 30, x + 30, y + 30, start=-math.degrees(a0) - 70, extent=140 * min(1, p * 1.3),
+                         style="arc", outline=P["mag"], width=3, tags="dyn")
+
+    def rpg_draw_mon(self, c, m, now):
+        g, P = self.rpg_g, RPG_PAL
+        x, y, r, t = m["x"], m["y"] + RPG_HUD, m["r"], m["type"]
+        if now < m["start"] and int(now * 12) % 2:
+            return
+        fl = now < m["flash"]
+        if not m["fly"]:
+            c.create_oval(x - r * 0.9, y + r * 0.45, x + r * 0.9, y + r * 0.95, fill=self.rpg_shade(), outline="", tags="dyn")
+        fx, fy = m["dir"]
+        K = lambda col: "#ffffff" if fl else col
+        R = lambda a, b, d, e, fill: c.create_rectangle(x + a, y + b, x + d, y + e, fill=K(fill), outline="", tags="dyn")
+        O = lambda a, b, d, e, fill: c.create_oval(x + a, y + b, x + d, y + e, fill=K(fill), outline="", tags="dyn")
+        eye = lambda ex, ey, col="#ffe14a": (O(ex - 3, ey - 3, ex + 3, ey + 3, col), O(ex - 1, ey - 1, ex + 1, ey + 1, "#111111"))
+        if m["elite"]:
+            c.create_oval(x - r - 5, y - r - 5, x + r + 5, y + r + 5, outline=P["mag"] if int(now * 6) % 2 else P["yel"], width=2, tags="dyn")
+        if t == "slime":
+            sq = 3 if m["state"] == "hop" else 0
+            O(-r, -r * 0.7 - sq, r, r * 0.9, "#39ff7a"); O(-r * 0.6, -r * 0.55 - sq, 0, -r * 0.1, "#b6ffd0")
+            eye(-4, -2); eye(4, -2)
+        elif t == "octo":
+            c.create_polygon(x - r, y, x - r * 0.5, y - r, x + r * 0.5, y - r, x + r, y, x + r * 0.5, y + r, x - r * 0.5, y + r,
+                             fill=K("#2b2a3a"), outline=K(P["cyan"]), width=2, tags="dyn")
+            R(fx * r * 0.5 - 3, fy * r * 0.5 - 3, fx * r * 1.4 + 3, fy * r * 1.4 + 3, "#454462")
+            O(-4, -4, 4, 4, P["red"] if m["state"] == "aim" else P["cyan"])
+        elif t == "bat":
+            w = math.sin(now * 22 + m["phase"]) * 6
+            c.create_polygon(x - 3, y, x - 17, y - 6 - w, x - 12, y + 4, fill=K(P["cyan"]), outline="", tags="dyn")
+            c.create_polygon(x + 3, y, x + 17, y - 6 - w, x + 12, y + 4, fill=K(P["cyan"]), outline="", tags="dyn")
+            O(-6, -6, 6, 7, "#7a2bff"); R(-4, -3, -2, -1, P["yel"]); R(2, -3, 4, -1, P["yel"])
+        elif t == "wolf":
+            O(-r, -r + 2, r, r, "#3a3f55"); R(-r + 2, -r - 3, -r + 6, -r + 4, "#3a3f55"); R(r - 6, -r - 3, r - 2, -r + 4, "#3a3f55")
+            R(fx * 8 - 6, fy * 8 - 6, fx * 8 + 6, fy * 8 + 6, "#262a3c"); R(-7, -5, 7, -2, P["red"]); R(-1, 2, 1, 7, P["mag"])
+            if m["state"] == "wind":
+                c.create_text(x, y - r - 10, text="!", fill=P["red"], font=("Consolas", 14, "bold"), tags="dyn")
+        elif t == "golem":
+            R(-r, -r, r, r, "#4a4a5e"); R(-r + 3, -r + 3, r - 3, r - 3, "#6a6a84"); O(-5, -5, 5, 5, P["mag"])
+            sx, sy = fx * (r + 1), fy * (r + 1)
+            if fx:
+                R(sx - 3, -r, sx + 3, r, P["cyan"])
+            else:
+                R(-r, sy - 3, r, sy + 3, P["cyan"])
+        elif t == "drache":
+            O(-r, -r + 4, r, r, "#12c46a"); O(-r + 6, -r + 10, r - 6, r - 2, "#8fffc4")
+            hx = -1 if m["dir"][0] < 0 else 1
+            O(hx * 12 - 12, -r - 4, hx * 12 + 12, -r + 18, "#0d9a52")
+            eye(hx * 14 - 5, -r + 4, P["mag"]); eye(hx * 14 + 5, -r + 4, P["mag"])
+            R(hx * 12 - 7, -r + 14, hx * 12 + 7, -r + 14 + (8 if m["state"] == "breath" else 3), "#1b0614")
+            for k in (-14, -4, 6, 16):
+                c.create_polygon(x + k, y - r + 8, x + k + 4, y - r - 6, x + k + 8, y - r + 8, fill=K(P["mag"]), outline="", tags="dyn")
+        elif t == "wurm":
+            tr = m["trail"]
+            for i in range(len(tr) - 1, -1, -3):
+                tx, ty = tr[i]
+                rr = 6 + i * 0.4
+                c.create_oval(tx - rr, ty + RPG_HUD - rr, tx + rr, ty + RPG_HUD + rr, fill=K(P["mag"] if (i // 3) % 2 else P["cyan"]),
+                              outline="#1b0614", tags="dyn")
+            O(-r, -r, r, r, "#ff6a2b"); eye(-6, -3); eye(6, -3); R(-7, 5, 7, 8, "#1b0614")
+        elif t == "koloss":
+            wind = m["state"] == "wind" and int(now * 10) % 2 == 0
+            R(-r, -r, r, r, "#ffffff" if wind else "#3a2a5a"); R(-r + 4, -r + 4, r - 4, r - 4, "#54407a")
+            R(-r - 6, -r - 8, -r + 2, -r + 4, P["cyan"]); R(r - 2, -r - 8, r + 6, -r + 4, P["cyan"])
+            R(-14, -6, -4, 0, P["red"]); R(4, -6, 14, 0, P["red"]); R(-10, 8, 10, 13, "#0a0508")
+            if now < m["stun"]:
+                c.create_text(x, y - r - 12, text="✦ ✦ ✦", fill=P["yel"], font=("Consolas", 10, "bold"), tags="dyn")
+            elif m["state"] == "wind":
+                c.create_text(x, y - r - 12, text="!", fill=P["red"], font=("Consolas", 16, "bold"), tags="dyn")
+
+    def rpg_draw_npc(self, c, n, now):
+        P = RPG_PAL
+        x, y = n["x"], n["y"] + RPG_HUD
+        R = lambda a, b, d, e, fill: c.create_rectangle(x + a, y + b, x + d, y + e, fill=fill, outline="", tags="dyn")
+        old, shop = n["kind"] == "oldman", n["kind"] == "shopkeeper"
+        R(-9, -3, 9, 12, "#2d2a4a" if old else P["yel"] if shop else P["mag"])
+        R(-8, -14, 8, -2, "#d9b79a")
+        R(-9, -17, 9, -9, "#c8c8d8" if old else "#0a0912")
+        R(-9, 2, 9, 4, P["cyan"])
+        R(-5, -8, 5, -5, P["cyan"] if not shop else P["red"])
+
+    def rpg_draw_chest(self, c, ch):
+        P = RPG_PAL
+        x, y = ch["x"], ch["y"] + RPG_HUD
+        R = lambda a, b, d, e, fill, out="": c.create_rectangle(x + a, y + b, x + d, y + e, fill=fill, outline=out, tags="dyn")
+        col = {"terminal": P["mag"], "imp": P["yel"]}.get(ch["item"], P["cyan"])
+        if ch["item"] == "terminal":
+            R(-12, -10, 12, 12, "#0b0b1c", col)
+            if ch["open"]:
+                R(-9, -7, 9, 4, "#06060e")
+            else:
+                R(-9, -7, 9, 4, "#06242b"); R(-6, -4, 6, -2, col); R(-6, 0, 2, 2, col)
+            R(-4, 6, 4, 8, col)
+            return
+        R(-13, -2, 13, 12, "#1b1a2e", col)
+        if ch["open"]:
+            R(-13, -12, 13, -3, "#262446", col); R(-10, -2, 10, 4, "#06060e")
+        else:
+            R(-13, -10, 13, -1, "#2d2a4a", col); R(-3, -3, 3, 4, col)
+
+    def rpg_draw_fx(self, c, now):
+        P = RPG_PAL
+        for e in self.rpg_g["fx"]:
+            p = (now - e["t0"]) / e["d"]
+            x, y, r = e["x"], e["y"] + RPG_HUD, e["r"]
+            k = e["k"]
+            if k == "boom":
+                rr = r * (0.4 + 0.6 * p)
+                c.create_oval(x - rr, y - rr, x + rr, y + rr, fill=P["cyan"] if p < 0.5 else "#0a2a3a",
+                              outline=P["mag"], width=3, tags="dyn")
+            elif k in ("puff", "leaf", "hit", "spark"):
+                col = {"puff": P["cyan"], "leaf": P["yel"], "hit": P["red"], "spark": "#ffffff"}[k]
+                for i in range(6):
+                    a = i * math.tau / 6 + p
+                    d = r * (0.3 + p)
+                    c.create_rectangle(x + math.cos(a) * d - 2, y + math.sin(a) * d - 2,
+                                       x + math.cos(a) * d + 2, y + math.sin(a) * d + 2,
+                                       fill=col if i % 2 else P["mag"], outline="", tags="dyn")
+
+    def rpg_draw_hud(self, now):
+        g, r, c = self.rpg_g, self.s["rpg"], self.rpg_ui["cv"]
+        P = RPG_PAL
+        max_hp = self.rpg_stats()[0]
+        blink = int(now * 2) % 2
+        sig = (int(r["hp"] // 5), max_hp, r["gold"], g["skeys"], r["bombs"], g["area"], g["ox"], g["oy"],
+               g["dpos"], blink, g["dun"]["f"] if g["dun"] else 0, len(g["dun"]["visited"]) if g["dun"] else 0,
+               len(r["imp"]))
+        if sig == g["hud_sig"]:
+            c.tag_raise("hud")
+            return
+        g["hud_sig"] = sig
+        c.delete("hud")
+        c.create_rectangle(0, 0, RPG_PW, RPG_HUD, fill="#07050d", outline="", tags="hud")
+        c.create_line(0, RPG_HUD - 1, RPG_PW, RPG_HUD - 1, fill=P["mag"], width=2, tags="hud")
+        n = max_hp // 10
+        if n > 20:
+            self.rpg_draw_heart(c, 8, 6, 2, "hud")
+            c.create_text(28, 12, text=f"× {n}  ({int(r['hp'])}/{max_hp})", fill=LIGHT, anchor="w",
+                          font=("Consolas", 9, "bold"), tags="hud")
+        else:
+            for i in range(n):
+                self.rpg_draw_heart(c, 8 + (i % 10) * 16, 5 + (i // 10) * 17, clamp((r["hp"] - i * 10) / 10, 0, 1), "hud")
+        gx = 182
+        c.create_rectangle(gx - 6, 8, gx + 6, 20, fill="#0a0912", outline=P["cyan"], width=2, tags="hud")
+        c.create_rectangle(gx - 2, 12, gx + 2, 16, fill=P["cyan"], outline="", tags="hud")
+        c.create_text(gx + 12, 14, text=str(r["gold"]), fill=P["cyan"], anchor="w", font=("Consolas", 10, "bold"), tags="hud")
+        c.create_oval(gx - 7, 28, gx - 1, 34, outline=P["yel"], width=2, tags="hud")
+        c.create_rectangle(gx - 3, 33, gx - 1, 40, fill=P["yel"], outline="", tags="hud")
+        c.create_text(gx + 12, 33, text=f"{g['skeys']}", fill=P["yel"], anchor="w", font=("Consolas", 10, "bold"), tags="hud")
+        c.create_oval(gx + 38, 27, gx + 50, 39, fill="#0a2a3a", outline=P["cyan"], width=2, tags="hud")
+        c.create_text(gx + 56, 33, text=str(r["bombs"]), fill=LIGHT, anchor="w", font=("Consolas", 10, "bold"), tags="hud")
+        c.create_text(gx + 96, 14, text=f"◈{len(r['imp'])}", fill=P["mag"], anchor="w", font=("Consolas", 10, "bold"), tags="hud")
+        if g["area"] == "dun":
+            label = f"NODE {g['dun']['f']}"
+            if g["dun"]["mut"]:
+                c.create_text(RPG_PW - 62, 34, text=RPG_MUTATORS[g["dun"]["mut"]][0], fill=P["yel"], anchor="e",
+                              font=("Consolas", 7, "bold"), tags="hud")
+        else:
+            label = "INNEN" if g["area"] == "in" else "SEKTOR"
+        c.create_text(RPG_PW - 62, 18, text=label, fill=P["mag"], anchor="e", font=("Consolas", 9, "bold"), tags="hud")
+        mx0, my0, cs = RPG_PW - 54, 4, 12
+        if g["area"] != "in":
+            for cx in range(3):
+                for cy in range(3):
+                    x0, y0 = mx0 + cx * (cs + 1), my0 + cy * (cs + 1)
+                    if g["area"] == "over":
+                        here = (cx, cy) == (g["ox"], g["oy"])
+                        fill = (P["mag"] if blink else LIGHT) if here else "#1a1833"
+                    else:
+                        pos, dun = (cx, cy), g["dun"]
+                        seen = pos in dun["visited"]
+                        near = any(frozenset((pos, q)) in dun["edges"] and q in dun["visited"] for q in
+                                   [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)])
+                        if not (seen or near):
+                            continue
+                        here = pos == g["dpos"]
+                        fill = (P["mag"] if blink else LIGHT) if here else ("#3a1d5a" if seen else "#07050d")
+                    c.create_rectangle(x0, y0, x0 + cs, y0 + cs, fill=fill, outline=P["cyan"], tags="hud")
+        c.tag_raise("hud")
+
+    def rpg_draw_heart(self, c, x, y, frac, tag):
+        full, empty = "#ff2b6e", "#2a0d1e"
+        for ry, a, b in RPG_HEART_RUNS:
+            for lo, hi, col in ((0, 4, full if frac > 0.01 else empty), (4, 7, full if frac > 0.99 else empty)):
+                s, e = max(a, lo), min(b, hi)
+                if s < e:
+                    c.create_rectangle(x + s * 2, y + ry * 2, x + e * 2, y + ry * 2 + 2, fill=col, outline="", tags=tag)
+
+    def rpg_pick_geom(self):
+        n = len(self.rpg_g["pick"]["opts"])
+        cw = (RPG_PW - 56 - 8 * (n - 1)) / n
+        y0, y1 = RPG_HUD + 62, RPG_HUD + RPG_PH - 58
+        return [(28 + i * (cw + 8), y0, 28 + i * (cw + 8) + cw, y1) for i in range(n)]
+
+    def rpg_pick_at(self, mx, my):
+        if not self.rpg_g["pick"]:
+            return None
+        for i, (x0, y0, x1, y1) in enumerate(self.rpg_pick_geom()):
+            if x0 <= mx <= x1 and y0 <= my <= y1:
+                return i
+        return None
+
+    def rpg_draw_pick(self, c, now):
+        P, p = RPG_PAL, self.rpg_g["pick"]
+        c.create_rectangle(16, RPG_HUD + 14, RPG_PW - 16, RPG_HUD + RPG_PH - 14, fill="#05040a", outline=P["cyan"], width=2, tags="dyn")
+        c.create_text(RPG_PW // 2, RPG_HUD + 34, text="// " + p["title"] + " //", fill=P["mag"], font=("Consolas", 12, "bold"), tags="dyn")
+        for i, (x0, y0, x1, y1) in enumerate(self.rpg_pick_geom()):
+            sel = i == p["sel"]
+            c.create_rectangle(x0, y0, x1, y1, fill="#0e0b1c" if not sel else "#1c1238", outline=P["mag"] if sel else "#3a3560",
+                               width=3 if sel else 1, tags="dyn")
+            c.create_text(x0 + 8, y0 + 8, text=f"[{i + 1}]", fill=P["yel"], anchor="nw", font=("Consolas", 9, "bold"), tags="dyn")
+            c.create_text((x0 + x1) / 2, y0 + 36, text=p["opts"][i]["label"], fill=P["cyan"], width=x1 - x0 - 10,
+                          font=("Consolas", 10, "bold"), tags="dyn")
+            c.create_text((x0 + x1) / 2, y0 + 70, text=p["opts"][i]["desc"], fill=LIGHT, width=x1 - x0 - 14, anchor="n",
+                          font=("Consolas", 8), tags="dyn")
+        c.create_text(RPG_PW // 2, RPG_HUD + RPG_PH - 28, text="1/2/3 oder A/D + LEERTASTE · oder anklicken",
+                      fill=DIM, font=("Consolas", 8), tags="dyn")
+
+    def rpg_draw(self, now):
+        c, g, r = self.rpg_ui["cv"], self.rpg_g, self.s["rpg"]
+        P = RPG_PAL
+        HUD, W, H = RPG_HUD, RPG_PW, RPG_PH
+        tr = g["trans"]
+        if tr is None and g["dirty"]:
+            c.delete("room")
+            self.rpg_draw_room(c, g["room"], 0, HUD, "room")
+            g["dirty"] = False
+        c.delete("dyn")
+        if tr:
+            p = clamp((now - tr["t0"]) / tr["dur"], 0.0, 1.0)
+            e = p * p * (3 - 2 * p)
+            step = e - tr["pa"]
+            tr["pa"] = e
+            c.move("room", -tr["d"][0] * W * step, -tr["d"][1] * H * step)
+            c.move("rnew", -tr["d"][0] * W * step, -tr["d"][1] * H * step)
+            self.rpg_draw_player(c, now)
+        else:
+            for kind, ox, oy in g["decor"]:
+                f = math.sin(now * 12 + ox) * 3
+                c.create_polygon(ox, oy + HUD - 14 - f, ox + 8, oy + HUD, ox, oy + HUD + 8, ox - 8, oy + HUD,
+                                 fill=P["cyan"], outline="#ffffff", tags="dyn")
+            for ch in g["chests"]:
+                self.rpg_draw_chest(c, ch)
+            for s in g["shop"]:
+                x, y = s["x"], s["y"] + HUD
+                c.create_rectangle(x - 15, y + 6, x + 15, y + 18, fill="#14111f", outline=P["cyan"], tags="dyn")
+                self.rpg_draw_icon(c, "imp" if s["item"].startswith("imp:") else s["item"], x, y - 4)
+                cost = self.rpg_price(s["item"])
+                c.create_text(x, y + 28, text=("OK" if s["item"].startswith("imp:") else "MAX") if cost is None else str(cost),
+                              fill=P["cyan"] if cost is not None and r["gold"] >= cost else DIM,
+                              font=("Consolas", 10, "bold"), tags="dyn")
+                if s["item"].startswith("imp:"):
+                    c.create_text(x, y - 24, text=RPG_IMPLANTS[s["item"][4:]][0], fill=P["mag"], font=("Consolas", 7, "bold"), tags="dyn")
+            for d in g["drops"]:
+                if d["life"] and d["life"] - (now - d["t0"]) < 3 and int(now * 8) % 2:
+                    continue
+                x, y = d["x"], d["y"] + HUD
+                if d["k"] == "gem":
+                    self.rpg_draw_gem(c, x, y, d["v"], g["dun"]["f"] if g["dun"] else r["floor"])
+                elif d["k"] in ("heart", "hc"):
+                    self.rpg_draw_heart(c, x - 7, y - 6 + math.sin(now * 6) * 1.5, 1.0, "dyn")
+                    if d["k"] == "hc":
+                        c.create_oval(x - 14, y - 13, x + 14, y + 11, outline=P["cyan"], width=2, tags="dyn")
+                else:
+                    self.rpg_draw_icon(c, "bomb", x, y)
+            for b in g["bombs"]:
+                x, y = b["x"], b["y"] + HUD
+                fl = int((b["fuse"] - now) * 8) % 2
+                c.create_oval(x - 9, y - 8, x + 9, y + 10, fill=P["mag"] if fl else "#0a2a3a", outline=P["cyan"], width=2, tags="dyn")
+                c.create_rectangle(x - 1, y - 13, x + 2, y - 8, fill=P["yel"], outline="", tags="dyn")
+            ents = [(n["y"], "n", n) for n in g["npcs"]] + [(m["y"], "m", m) for m in g["mons"]] + [(g["y"], "p", None)]
+            for _, kind, o in sorted(ents, key=lambda e: e[0]):
+                if kind == "n":
+                    self.rpg_draw_npc(c, o, now)
+                elif kind == "m":
+                    self.rpg_draw_mon(c, o, now)
+                else:
+                    self.rpg_draw_player(c, now)
+            for s in g["shots"]:
+                x, y = s["x"], s["y"] + HUD
+                if s["k"] == "beam":
+                    c.create_rectangle(x - 8, y - 3, x + 8, y + 3, fill="#ffffff", outline=P["cyan"], width=2, tags="dyn")
+                else:
+                    col = P["yel"] if s["k"] == "fire" else P["mag"]
+                    c.create_rectangle(x - 4, y - 4, x + 4, y + 4, fill=col, outline="#ffffff", tags="dyn")
+            self.rpg_draw_fx(c, now)
+            boss = next((m for m in g["mons"] if m["boss"]), None)
+            if boss:
+                c.create_rectangle(80, HUD + 6, W - 80, HUD + 14, fill="#07050d", outline=P["cyan"], tags="dyn")
+                c.create_rectangle(81, HUD + 7, 81 + (W - 162) * max(0, boss["hp"]) / boss["max"], HUD + 13,
+                                   fill=P["mag"], outline="", tags="dyn")
+                c.create_text(W // 2, HUD + 22, text=boss["name"], fill=LIGHT, font=("Consolas", 8, "bold"), tags="dyn")
+        text, until = g["toast"]
+        if text and now < until:
+            c.create_text(W // 2 + 1, HUD + H - 16, text=text, fill="#000000", font=("Consolas", 11, "bold"), tags="dyn")
+            c.create_text(W // 2, HUD + H - 17, text=text, fill=P["cyan"], font=("Consolas", 11, "bold"), tags="dyn")
+        d = g["dlg"]
+        if d:
+            y0 = HUD + H - 84
+            c.create_rectangle(8, y0, W - 8, HUD + H - 8, fill="#05040a", outline=P["cyan"], width=2, tags="dyn")
+            c.create_text(18, y0 + 6, text=d["who"], fill=P["mag"], anchor="nw", font=("Consolas", 9, "bold"), tags="dyn")
+            line = d["lines"][d["i"]]
+            shown = int((now - d["t0"]) * 45)
+            c.create_text(18, y0 + 24, text=line[:shown], fill=LIGHT, anchor="nw", width=W - 40,
+                          font=("Consolas", 10, "bold"), tags="dyn")
+            if shown >= len(line) and int(now * 3) % 2:
+                c.create_text(W - 22, HUD + H - 18, text="▼", fill=P["mag"], font=("Consolas", 9), tags="dyn")
+        if g["pick"]:
+            self.rpg_draw_pick(c, now)
+        fd = g["fade"]
+        if fd or g["over"]:
+            c.create_rectangle(0, HUD, W, HUD + H, fill="#000000", outline="", tags="dyn")
+            if g["over"]:
+                c.create_text(W // 2, HUD + H // 2, text="SIGNAL VERLOREN", fill=P["red"], font=("Consolas", 20, "bold"), tags="dyn")
+        self.rpg_draw_hud(now)
+        c.tag_raise("hud")
+
+    def rpg_refresh(self):
+        ui = getattr(self, "rpg_ui", None)
+        if not ui or self.rpg_window is None:
+            return
+        r, (max_hp, atk, dfn) = self.s["rpg"], self.rpg_stats()
+        g = self.rpg_g
+        where = f"Node {g['dun']['f']}" if g["area"] == "dun" else "Sektor"
+        try:
+            ui["stats"].config(text=f"Lv {r['lvl']}  XP {r['xp']}/{25 * r['lvl']}   Credits {r['gold']}\n"
+                                    f"HP {int(r['hp'])}/{max_hp}   ATK {atk}  DEF {dfn}   Kits {r['potions']}   EMP {r['bombs']}\n"
+                                    f"{where}   nächste Node {r['floor']} (Rekord {r['best']})   "
+                                    f"Herzcontainer {r['hearts']}   Siege {r['wins']}   Netz #{r['seed']}")
+            ui["snd"].config(text="🔊 Sound" if self.sfx_enabled else "🔇 Sound")
+            ui["imp"].config(text="Implantate: " + (", ".join(RPG_IMPLANTS[k][0] for k in r["imp"]) or "–"))
+            ui["log"].config(text="\n".join(getattr(self, "rpg_lines", [])))
+        except tk.TclError:
+            pass
+
+    def rpg_loop(self):
+        win = self.rpg_window
+        if win is None:
+            return
+        try:
+            if not win.winfo_exists():
+                return
+            now = time.time()
+            g = self.rpg_g
+            dt, g["t"] = min(0.05, now - g["t"]), now
+            self.rpg_regen()
+            try:
+                if win.focus_displayof() is not None:        # ohne Fokus pausiert das Spiel
+                    self.rpg_step(dt, now)
+                if self.rpg_window is not None:
+                    self.rpg_draw(now)
+            except tk.TclError:
+                raise
+            except Exception:
+                self._log_error()
+            if self.rpg_window is not None:
+                g["n"] += 1
+                if g["n"] % 8 == 0:
+                    self.rpg_refresh()
+                self.rpg_after = win.after(33, self.rpg_loop)
+        except tk.TclError:
+            pass
+
+    def rpg_key(self, event, down):
+        k = event.keysym
+        k = k.lower() if len(k) == 1 else k
+        g = self.rpg_g
+        if not down:
+            g["keys"].discard(k)
+            g["held"].discard(k)
+            return
+        p = g["pick"]
+        if p:
+            if k in g["held"]:
+                return
+            g["held"].add(k)
+            if k in ("1", "2", "3"):
+                self.rpg_pick_choose(int(k) - 1)
+            elif k in ("a", "Left"):
+                p["sel"] = (p["sel"] - 1) % len(p["opts"])
+                self.rpg_sfx("tick")
+            elif k in ("d", "Right"):
+                p["sel"] = (p["sel"] + 1) % len(p["opts"])
+                self.rpg_sfx("tick")
+            elif k in ("space", "Return", "j"):
+                self.rpg_pick_choose(p["sel"])
+            return
+        if k in ("space", "j", "Return", "q", "e", "b", "k"):
+            if k in g["held"]:                            # Tastenwiederholung ignorieren
+                return
+            g["held"].add(k)
+            if k in ("space", "j", "Return"):
+                self.rpg_action()
+            elif k in ("q", "e"):
+                self.rpg_potion()
+            else:
+                self.rpg_bomb()
+        else:
+            g["keys"].add(k)
+
+    def rpg_toggle_sound(self):
+        self.toggle_sfx()                      # gleicher Schalter wie in den Einstellungen („Effekte")
+        self.rpg_refresh()
+        self.rpg_sfx("rpg_gem")
+
+    def rpg_click(self, e, win):
+        win.focus_set()
+        g = self.rpg_g
+        if g["pick"]:
+            i = self.rpg_pick_at(e.x, e.y)
+            if i is not None:
+                self.rpg_pick_choose(i)
+        elif g["dlg"]:
+            self.rpg_dlg_next()
+        else:
+            self.rpg_attack()
+
+    def close_rpg_window(self):
+        win, self.rpg_window = getattr(self, "rpg_window", None), None
+        self.save()
+        try:
+            if win is not None:
+                win.destroy()
+        except tk.TclError:
+            pass
+
+    def open_rpg_window(self):
+        win = getattr(self, "rpg_window", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.deiconify()
+                    win.lift()
+                    return
+            except tk.TclError:
+                pass
+        win = NovaToplevel(self.root)
+        win.title("NOVA – RPG")
+        win.configure(bg=PANEL)
+        win.geometry("480x710")
+        win.protocol("WM_DELETE_WINDOW", self.close_rpg_window)
+        self.rpg_window = win
+        ui = self.rpg_ui = {}
+        self.rpg_g = self.rpg_new_state()
+        tk.Label(win, text="NOVA · RPG // NETRUNNER", bg=PANEL, fg=ACCENT,
+                 font=("Consolas", 16, "bold")).pack(pady=(8, 0))
+        tk.Label(win, text="WASD/Pfeile = laufen · Leertaste = Klinge / Sprechen / Öffnen\n"
+                           "B = EMP-Bombe · Q = Nano-Kit · Klick = Schlag · Pausiert ohne Fokus.\n"
+                           "Fortschritt wird gespeichert, HP regenerieren offline.",
+                 bg=PANEL, fg=DIM, font=("Consolas", 8), wraplength=450).pack(pady=(0, 4))
+        ui["cv"] = tk.Canvas(win, width=RPG_PW, height=RPG_HUD + RPG_PH, bg="#000000",
+                             highlightthickness=1, highlightbackground=EDGE)
+        ui["cv"].pack(padx=12)
+        ui["cv"].bind("<Button-1>", lambda e: self.rpg_click(e, win))
+        ui["stats"] = tk.Label(win, bg=PANEL, fg=LIGHT, font=("Consolas", 9, "bold"), justify="left")
+        ui["stats"].pack(anchor="w", padx=14, pady=(4, 0))
+        ui["imp"] = tk.Label(win, bg=PANEL, fg=RPG_PAL["mag"], font=("Consolas", 8, "bold"), justify="left",
+                             anchor="w", wraplength=450)
+        ui["imp"].pack(fill="x", padx=14, pady=(0, 4))
+        frame = tk.Frame(win, bg=PANEL)
+        frame.pack(fill="x", padx=12, pady=3)
+        for text, cmd in (("🧪 Nano-Kit (Q)", self.rpg_potion), ("💥 EMP-Bombe (B)", self.rpg_bomb)):
+            tk.Button(frame, text=text, relief="flat", bg=ACCENT, fg=PANEL, takefocus=0,
+                      font=("Consolas", 9, "bold"), pady=5, command=cmd).pack(side="left", expand=True, fill="x", padx=3)
+        ui["snd"] = tk.Button(frame, relief="flat", bg=PANEL2, fg=LIGHT, takefocus=0, font=("Consolas", 9, "bold"),
+                              pady=5, command=self.rpg_toggle_sound)
+        ui["snd"].pack(side="left", fill="x", padx=3)
+        ui["log"] = tk.Label(win, bg=PANEL, fg=LIGHT, font=("Consolas", 9), justify="left",
+                             anchor="nw", wraplength=450, height=5)
+        ui["log"].pack(fill="x", padx=14, pady=6)
+        win.bind("<KeyPress>", lambda e: self.rpg_key(e, True))
+        win.bind("<KeyRelease>", lambda e: self.rpg_key(e, False))
+        win.bind("<FocusOut>", lambda e: self.rpg_g["keys"].clear())
+        self.rpg_regen()
+        self.rpg_build_room(time.time())
+        self.rpg_log("Verbindung steht. Finde das Netz-Gate, Choom.")
+        self.rpg_refresh()
+        win.focus_force()
+        self.rpg_after = win.after(33, self.rpg_loop)
+
     # ================= Werkzeuge: Timer =================
     def timer_active(self):
         return self.s["timer"]["end"] > 0
@@ -5933,6 +8959,20 @@ class Nova:
         self.save()
         self.say(f"{label} gestartet: {fmt_clock(seconds)}.", 4, speak=False)
 
+    POMO_NAMES = {1: "Fokus", 2: "Pause", 3: "Fokus", 4: "Pause", 5: "Fokus", 6: "Pause",
+                  7: "Fokus", 8: "Lange Pause"}
+
+    def pomo_waiting(self):
+        return bool(self.s["timer"].get("wait"))
+
+    def start_pomo(self, phase=1):
+        name = self.POMO_NAMES[phase]
+        sec = 1500 if phase % 2 else (900 if phase == 8 else 300)
+        self.s["timer"] = {"end": time.time() + sec, "total": float(sec), "label": name, "pomo": phase}
+        self.dismiss_alarm()
+        self.save()
+        self.say(f"Pomodoro {(phase + 1) // 2}/4: {name} {fmt_clock(sec)}.", 4, speak=False)
+
     def add_timer_minutes(self, minutes=5):
         if not self.timer_active():
             self.say("Es läuft kein Timer.", 3, speak=False)
@@ -5943,7 +8983,7 @@ class Nova:
         self.say(f"+{minutes} Min. Noch {fmt_clock(self.timer_remaining())}.", 3, speak=False)
 
     def stop_timer(self):
-        if not self.timer_active():
+        if not self.timer_active() and not self.pomo_waiting():
             self.say("Es läuft kein Timer.", 3, speak=False)
             return
         self.s["timer"] = {"end": 0.0, "total": 0.0, "label": ""}
@@ -5956,6 +8996,7 @@ class Nova:
             return
         label = timer.get("label") or "Timer"
         overdue = now - timer["end"]
+        pomo = timer.get("pomo", 0)
         self.s["timer"] = {"end": 0.0, "total": 0.0, "label": ""}
         if label == "Fokus":
             self.add_points(3, announce=False)
@@ -5963,6 +9004,13 @@ class Nova:
             text = "Fokus geschafft! +3 Punkte. Zeit für eine Pause."
         else:
             text = f"{label} abgelaufen!"
+        if pomo:
+            if pomo < 8:
+                self.s["timer"] = {"end": 0.0, "total": 0.0, "label": "Pomodoro",
+                                   "pomo": pomo + 1, "wait": True}
+                text += f" Klick für: {self.POMO_NAMES[pomo + 1]}"
+            else:
+                text += " Pomodoro-Zyklus fertig!"
         if overdue > 10:
             text += f" (vor {fmt_duration(overdue)})"
         self.trigger_alarm("TIMER VORBEI!", text)
@@ -6031,6 +9079,8 @@ class Nova:
             remaining = self.timer_remaining()
             progress = clamp(1.0 - remaining / max(1.0, timer["total"]), 0.0, 1.0)
             chips.append((f"⏱ {fmt_clock(remaining)}", progress, remaining <= 10))
+        if self.pomo_waiting():
+            chips.append((f"🍅 Klick: {self.POMO_NAMES[timer['pomo']]}", None, True))
         if self.ac_running:
             if now < self.ac_start_at:
                 chips.append((f"🖱 in {int(self.ac_start_at - now) + 1}s", None, False))
@@ -6897,6 +9947,58 @@ class Nova:
             self.s["controlled_apps"].append(path)
             self.save()
         self.say(f"{os.path.basename(path)} ist jetzt freigegeben.", 3, speak=False)
+
+    def add_site(self):
+        if len(self.s["sites"]) >= 12:
+            self.say("Höchstens zwölf Websites.", 3, speak=False)
+            return
+        win = NovaToplevel(self.root)
+        win.title("Website speichern")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        name_v, url_v = tk.StringVar(), tk.StringVar()
+        for label, var in (("Name (optional)", name_v), ("Adresse", url_v)):
+            tk.Label(win, text=label, bg=PANEL, fg=ACCENT, font=("Consolas", 9, "bold"),
+                     anchor="w").pack(fill="x", padx=14, pady=(10, 0))
+            tk.Entry(win, textvariable=var, width=40, bg=PANEL2, fg=LIGHT, insertbackground=ACCENT,
+                     relief="flat", font=("Consolas", 10)).pack(padx=14, pady=(2, 0))
+
+        def save(_e=None):
+            url = url_v.get().strip().replace(" ", "")
+            if url and not re.match(r"[a-z][a-z0-9+.-]*://", url, re.I):
+                url = "https://" + url
+            host = re.sub(r"^https?://(www\.)?", "", url, flags=re.I).split("/")[0]
+            if not re.match(r"https?://", url, re.I) or "." not in host:
+                messagebox.showerror("Ungültige Adresse", "Bitte eine Adresse wie example.com eingeben.",
+                                     parent=win)
+                return
+            if all(x["url"] != url for x in self.s["sites"]):
+                self.s["sites"].append({"name": (name_v.get().strip() or host)[:40], "url": url})
+                self.save()
+            win.destroy()
+            self.say("Website gespeichert.", 3, speak=False)
+
+        row = tk.Frame(win, bg=PANEL)
+        row.pack(pady=12)
+        nova_button(row, "Speichern", save, primary=True).pack(side="left", padx=4)
+        nova_button(row, "Abbrechen", win.destroy).pack(side="left", padx=4)
+        win.bind("<Return>", save)
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.focus_force()
+
+    def open_site(self, url):
+        if all(x["url"] != url for x in self.s["sites"]):
+            return
+        try:
+            ok = webbrowser.open(url)
+        except webbrowser.Error:
+            ok = False
+        self.say("Website geöffnet." if ok else "Website konnte nicht geöffnet werden.", 3, speak=False)
+
+    def remove_site(self, url):
+        self.s["sites"] = [x for x in self.s["sites"] if x["url"] != url]
+        self.save()
+        self.say("Website entfernt.", 3, speak=False)
 
     def launch_controlled_app(self, path):
         if path not in self.s["controlled_apps"] or not path.lower().endswith(".exe"):
@@ -8054,7 +11156,9 @@ class Nova:
         if getattr(self, "acc_edit", False):
             self._acc_press(e)
             return
-        if self.alarm_until:
+        if self.pomo_waiting():
+            self.start_pomo(self.s["timer"]["pomo"])
+        elif self.alarm_until:
             self.dismiss_alarm()
         if self.naming or self.feeding or self.prompt:
             self.grab_focus()
@@ -8134,9 +11238,10 @@ class Nova:
 
     def hit_dot(self, x, y):
         for d in self.dots:
-            if (d["x"] - x) ** 2 + (d["y"] - y) ** 2 <= 16 ** 2:
+            if (d["x"] - x) ** 2 + (d["y"] - y) ** 2 <= 20 ** 2:
                 self.dots.remove(d)
                 self.game_score += 1
+                self.case_sfx("tick")
                 return True
         return False
 
@@ -8656,26 +11761,42 @@ class Nova:
             return path
         if not IS_WIN or winsound is None or kind not in SFX_KINDS:
             return None
+        lock = self.sfx_locks.setdefault(kind, threading.Lock())
+        if not lock.acquire(blocking=False):       # wird gerade im Hintergrund erzeugt: nicht doppelt schreiben
+            return None
         try:
-            if self.sfx_dir is None:
-                self.sfx_dir = tempfile.mkdtemp(prefix="nova_sfx_")
-                atexit.register(self.sfx_cleanup)
+            path = self.sfx_files.get(kind)
+            if path is not None:
+                return path
+            if not self.sfx_ensure_dir():
+                return None
             path = os.path.join(self.sfx_dir, kind + ".wav")
-            with open(path, "wb") as f:
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:             # erst fertig schreiben, dann atomar einsetzen
                 f.write(synth_sfx(kind))
+            os.replace(tmp, path)
         except OSError:
             return None
+        finally:
+            lock.release()
         self.sfx_files[kind] = path
         return path
+
+    def sfx_ensure_dir(self):
+        with self.sfx_dir_lock:
+            if self.sfx_dir is None:
+                try:
+                    self.sfx_dir = tempfile.mkdtemp(prefix="nova_sfx_")
+                except OSError:
+                    return False
+                atexit.register(self.sfx_cleanup)
+        return True
 
     def sfx_prewarm(self):
         """Erzeugt alle Effekt-WAVs im Hintergrund; sonst blockiert die erste Synthese den Aufprall."""
         if not IS_WIN or winsound is None:
             return
-        try:
-            self.sfx_dir = tempfile.mkdtemp(prefix="nova_sfx_")
-            atexit.register(self.sfx_cleanup)
-        except OSError:
+        if not self.sfx_ensure_dir():
             return
         threading.Thread(target=lambda: [self.sfx_file(k) for k in SFX_KINDS],
                          daemon=True, name="nova-sfx-prewarm").start()
