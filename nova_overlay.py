@@ -24,6 +24,9 @@ Verbesserungen dieser Version:
       Zielpunkte (Maus hinbewegen, 5 s warten) oder Klicken an der aktuellen Mausposition.
       Notausschalter: F6 (Start/Stopp) und Esc (Stopp). Klicks auf NOVAs eigene Fenster
       werden übersprungen. Timer und Erinnerungen überleben einen Neustart.
+      Speicher (nur wenn "Ziehen: Speichern" an ist): öffnet den Ablageordner; bis zu 5 Kugeln
+      kreisen darum, ein Klick darauf kopiert den Eintrag (wie Strg+C).
+      Screenshots (Option 'Screenshot: mit NOVA' bestimmt, ob NOVA auf dem Bild ist): Knopf 'Screenshot' (ganzer Bildschirm) oder Win+Umschalt+S und dann Strg+V auf NOVA.
   - Daten-Farm (Menü > Spielen > Farm): Idle-Spiel in eigenem Fenster. Generatoren, Upgrades
     und Reboot (Chips = dauerhafter Bonus + Punkte für NOVA). Läuft im Hintergrund weiter,
     solange NOVA läuft; offline 50 % für bis zu 12 Stunden. Wird im Spielstand gespeichert.
@@ -230,6 +233,7 @@ HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", 
 SAVE_FILE = os.path.join(HERE, "nova_save.json")
 AI_MEMORY_FILE = os.path.join(HERE, "nova_ai_memory.json")
 PEER_DIR = os.path.join(tempfile.gettempdir(), "nova_peers")   # gemeinsamer Ordner für mehrere NOVA-Instanzen
+STASH_DIR = os.path.join(HERE, "nova_speicher")   # Speicherraum: abgelegte Dateien und Texte
 PEER_STALE = 3.0                    # Sekunden ohne Lebenszeichen = Instanz gilt als beendet
 PEER_MEET_DIST = 120                # Abstand (px), ab dem sich zwei NOVAs begrüßen
 PEER_HELLO = ("Hey {n}!", "Oh, {n}, da bist du ja.", "Na, {n}, alles klar?", "Hi {n}!")
@@ -716,8 +720,9 @@ def clamp(v, lo=0.0, hi=100.0):
     return max(lo, min(hi, v))
 
 
-def panel(c, x1, y1, x2, y2, cut=7, fill=PANEL, outline=ACCENT, width=2):
+def panel(c, x1, y1, x2, y2, cut=7, fill=None, outline=None, width=2):
     """Rechteck mit angeschnittenen Ecken (oben links / unten rechts)."""
+    fill, outline = fill or PANEL, outline or ACCENT      # aktuelle Akzentfarbe, nicht die beim Import
     pts = [x1 + cut, y1, x2, y1, x2, y2 - cut, x2 - cut, y2, x1, y2, x1, y1 + cut]
     return c.create_polygon(pts, fill=fill, outline=outline, width=width)
 
@@ -2105,7 +2110,7 @@ def default_state():
             "mini_manual": False, "walking": True, "voice_enabled": False,
             "phone_mode": False, "phone_image": "", "phone_talk_image": "",
             "living_mode": False, "cursor_play": True, "sys_monitor": False, "synth_voice": True,
-            "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False, "peer_mode": True,
+            "controlled_apps": [], "fav_apps": [], "sites": [], "notes": "", "spotify_mode": True, "physics": True, "sfx": True, "burst_mode": False, "peer_mode": True, "store_mode": False, "screenshot_nova": True,
             "accent": "Rot", "fps": 30, "bubble_dy": 0, "hud_dy": 0, "sprite_scale": 1.0, "foot_pct": 0.0, "foot_sit": 0.0, "foot_air": 0.0, "ground_offset": 0,
             "idle": default_idle(), "timer": {"end": 0.0, "total": 0.0, "label": ""},
             "rpg": default_rpg(),
@@ -2167,7 +2172,7 @@ def sanitize_state(state):
     state["words"] = dict(list(words.items())[:MAX_WORDS])
     for k in ("emotion_setup_done", "window_mode", "mini_auto", "mini_manual",
               "walking", "voice_enabled", "phone_mode", "living_mode", "cursor_play",
-              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode", "peer_mode"):
+              "sys_monitor", "synth_voice", "ai_enabled", "spotify_mode", "physics", "sfx", "burst_mode", "peer_mode", "store_mode", "screenshot_nova"):
         state[k] = bool(state.get(k, base[k]))
     for k, lo, hi in (("bubble_dy", -90, 280), ("hud_dy", 0, 320)):
         try:
@@ -2630,8 +2635,8 @@ class NovaToplevel(tk.Toplevel):
 
 class _NovaMessageBox:
     """Ersatz für tkinter.messagebox im NOVA-Stil (gleiche Aufrufe, rahmenloses Fenster)."""
-    ICONS = {"info": ("i", ACCENT), "warning": ("!", ORANGE),
-             "error": ("✕", ACCENT), "question": ("?", ACCENT)}
+    ICONS = {"info": ("i", None), "warning": ("!", ORANGE),      # None = aktuelle Akzentfarbe
+             "error": ("✕", None), "question": ("?", None)}
 
     def _run(self, kind, title, message, opts, buttons, default, cancel):
         parent = _live_parent(opts.get("parent"))
@@ -2656,6 +2661,7 @@ class _NovaMessageBox:
         win.bind("<Escape>", lambda e: done(cancel))
 
         glyph, color = self.ICONS[kind]
+        color = color or ACCENT
         body = tk.Frame(win, bg=PANEL)
         body.pack(fill="both", expand=True, padx=18, pady=(16, 8))
         icon = tk.Canvas(body, width=46, height=46, bg=PANEL, highlightthickness=0)
@@ -3361,11 +3367,13 @@ class Nova:
         self.sfx_enabled = self.s["sfx"]
         self.burst_mode = self.s["burst_mode"]
         self.peer_mode = self.s["peer_mode"]
+        self.store_mode = self.s["store_mode"]
         self.peer_file = os.path.join(PEER_DIR, f"{os.getpid()}.json")
         self.peers, self.peer_sync = [], 0.0
         self.peer_tgt, self.peer_until, self.peer_cd = None, 0.0, 0.0
         self.peer_act, self.toy = None, None
         atexit.register(self.peer_leave)
+        self.root.after(800, self.enable_file_drop)
         self.burst_until = self.burst_t0 = 0.0
         self.burst_parts, self.burst_blood, self.burst_shards_list = [], [], []
         self.sfx_dir = None
@@ -4219,6 +4227,7 @@ class Nova:
                 {"label": "Zurück", "icon": "↩️", "action": go("main")},
             ]
         if page == "tools":
+            stash_top = self.stash_recent(5) if self.store_mode else []
             return "WERKZEUGE", [
                 {"label": "Timer", "icon": "⏱️", "action": go("timer"), "on": self.timer_active()},
                 {"label": "Erinnerungen", "icon": "🔔", "action": go("reminders"),
@@ -4229,6 +4238,12 @@ class Nova:
                  "orbit": list(self.s["sites"])},
                 {"label": "Notizblock", "icon": "📝", "action": self.open_notes,
                  "on": bool(self.s.get("notes"))},
+            ] + ([{"label": "Speicher", "icon": "🗄️", "action": self.open_stash,
+                   "on": bool(stash_top), "orbit": stash_top},
+                  {"label": "Screen-\nshot", "icon": "📸", "action": self.stash_screenshot},
+                  {"label": "Screenshot:\nmit NOVA", "icon": "🐾", "action": self.toggle_screenshot_nova,
+                   "on": self.s.get("screenshot_nova", True)}]
+                 if self.store_mode else []) + [
                 {"label": "Zurück", "icon": "↩️", "action": go("main")},
             ]
         if page == "timer":
@@ -4455,6 +4470,14 @@ class Nova:
                  "on": self.burst_mode},
                 {"label": "Andere\nNOVAs", "icon": "👋", "action": self.toggle_peer_mode,
                  "on": self.peer_mode},
+                {"label": "Ziehen:\nSpeichern", "icon": "🗄️", "action": self.toggle_store_mode,
+                 "on": self.store_mode,
+                 "desc": "Wenn an, frisst NOVA gezogene oder eingefügte (Strg+V) Dateien, Ordner, "
+                         "Texte und Screenshots nicht, sondern legt sie im Ordner nova_speicher ab. "
+                         "Bei Werkzeuge erscheinen dann Speicher (mit kreisenden Kugeln zum "
+                         "Kopieren) und ein Screenshot-Knopf."},
+                {"label": "Speicher\nöffnen", "icon": "📂", "action": self.open_stash,
+                 "desc": "Öffnet den Ordner nova_speicher im Explorer."},
                 {"label": "Lebensmodus", "icon": "🧬", "action": self.toggle_living_mode,
                  "on": self.living_mode},
                 {"label": "Cursor-\nspiele", "icon": "🖱️", "action": self.toggle_cursor_play,
@@ -4525,7 +4548,7 @@ class Nova:
                  font=("Consolas", 16, "bold")).pack(pady=(12, 6))
         bar = tk.Frame(win, bg=PANEL)
         bar.pack(fill="x", padx=14)
-        body = tk.Frame(win, bg=PANEL, width=480, height=330)
+        body = tk.Frame(win, bg=PANEL, width=480, height=400)
         body.pack(fill="x", padx=6, pady=8)
         body.pack_propagate(False)
         tabs = {}
@@ -4541,11 +4564,20 @@ class Nova:
                     continue
                 text = f'{e.get("icon", "")}  {e["label"].replace(chr(10), " ")}'
                 state = "disabled" if e.get("dim") else "normal"
+                desc = e.get("desc")
+
+                def add_desc(d=desc):
+                    if d:
+                        tk.Label(body, text=d, bg=PANEL, fg=LIGHT, font=("Consolas", 9),
+                                 wraplength=410, justify="left", anchor="w").pack(
+                            fill="x", padx=(40, 14), pady=(0, 4))
+
                 if e.get("on") is None:
                     tk.Button(body, text=text, command=e["action"], anchor="w", padx=10,
                               bg=PANEL2, fg=LIGHT, activebackground=EDGE, relief="flat",
                               activeforeground=LIGHT, state=state,
                               font=("Consolas", 10)).pack(fill="x", padx=14, pady=2)
+                    add_desc()
                     continue
                 var = tk.BooleanVar(value=bool(e["on"]))
 
@@ -4560,6 +4592,7 @@ class Nova:
                                bg=PANEL, fg=LIGHT, selectcolor=PANEL2, state=state,
                                activebackground=PANEL, activeforeground=LIGHT,
                                font=("Consolas", 11)).pack(fill="x", padx=14, pady=2)
+                add_desc()
 
         for label, page in self.ALL_SETTINGS_TABS:
             tabs[page] = tk.Button(bar, text=label, command=lambda p=page: show(p),
@@ -4680,7 +4713,8 @@ class Nova:
             item.setdefault("dim", False)
             item.setdefault("icon", "•")
         self.radial_items = items
-        self.radial_sats = [{"parent": it, "name": site["name"], "url": site["url"], "i": i,
+        self.radial_sats = [{"parent": it, "name": site["name"], "url": site.get("url"),
+                             "copy": site.get("copy"), "i": i,
                              "n": len(it["orbit"]), "hover": False, "x": 0, "y": 0, "r": 0}
                             for it in items for i, site in enumerate(it.get("orbit") or [])]
         self.radial_phase, self.radial_phase_t = 0.0, time.monotonic()
@@ -4855,9 +4889,12 @@ class Nova:
                 return
         for sat in getattr(self, "radial_sats", []):
             if sat["hover"]:
-                url = sat["url"]
+                url, cp = sat["url"], sat.get("copy")
                 self.close_radial_menu()
-                self.open_site(url)
+                if cp:
+                    self.copy_stash_item(cp)
+                else:
+                    self.open_site(url)
                 return
 
     def check_radial_idle(self, now):
@@ -10058,17 +10095,115 @@ class Nova:
             self.finish_prompt(text)
             return
         self.end_feeding()
-        if text.strip():
+        if text.strip() and self.store_mode:
+            self.stash_text(text)
+        elif text.strip():
             self.eat_words(text.split()[:5], remember=True)
         else:
             self.feed_clipboard()
 
+    def enable_file_drop(self):
+        """Dateien aus dem Explorer auf NOVA ziehen = füttern (nur der Dateiname wird gegessen).
+        Braucht das Paket tkinterdnd2 (pip install tkinterdnd2); ohne es bleibt die Funktion einfach aus."""
+        try:
+            import types
+            from tkinterdnd2 import TkinterDnD, DND_FILES, DND_TEXT
+            self.root.TkdndVersion = TkinterDnD._require(self.root)
+            for n in dir(TkinterDnD.DnDWrapper):                  # DnD-Methoden direkt an das Hauptfenster hängen
+                f = getattr(TkinterDnD.DnDWrapper, n)
+                if not n.startswith("__"):
+                    setattr(self.root, n, types.MethodType(f, self.root) if callable(f) else f)
+            self.root.drop_target_register(DND_FILES, DND_TEXT)
+            self.root.dnd_bind("<<Drop>>", self.on_drop)
+        except Exception:
+            pass
+
+    def on_drop(self, e):
+        items = list(self.root.tk.splitlist(e.data))
+        if items and all(os.path.exists(q) for q in items):
+            self.eat_files(items)
+        elif self.store_mode:
+            self.stash_text(e.data)
+        else:
+            words = re.findall(r"[A-Za-zÄÖÜäöüß]{2,20}", e.data)[:5]
+            if words:
+                self.eat_words(words, remember=False)
+        return e.action if hasattr(e, "action") else None
+
+    def eat_files(self, paths):
+        if self.store_mode:
+            self.stash_paths(paths)
+            return
+        self.peer_event("feed")
+        words = []
+        for pth in paths[:5]:
+            words += re.findall(r"[A-Za-zÄÖÜäöüß]{2,20}", os.path.splitext(os.path.basename(pth))[0])[:2]
+        if not words:
+            self.say("Nur Zahlen und Zeichen. Nicht lecker.", 3, speak=False)
+            return
+        self.eat_words(words[:5], remember=False)
+
+    def poll_paste(self, now):
+        """Strg+V, während die Maus über NOVA ist: Zwischenablage füttern bzw. im Speicher ablegen."""
+        if not IS_WIN or not self.hover or now - getattr(self, "_paste_t", 0) < 0.05:
+            return
+        self._paste_t = now
+        down = bool(user32.GetAsyncKeyState(0x11) & 0x8000 and user32.GetAsyncKeyState(0x56) & 0x8000)
+        if down and not getattr(self, "_paste_down", False) and not (self.feeding or self.prompt or self.naming):
+            self.feed_clipboard()
+        self._paste_down = down
+
+    def clipboard_files(self):
+        """Im Explorer kopierte Dateien (Strg+C) aus der Zwischenablage lesen."""
+        if not IS_WIN:
+            return []
+        try:
+            from ctypes import wintypes
+            sh = ctypes.windll.shell32
+            user32.GetClipboardData.restype = ctypes.c_void_p
+            sh.DragQueryFileW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+            out = []
+            if not user32.OpenClipboard(None):
+                return []
+            try:
+                h = user32.GetClipboardData(15)                 # CF_HDROP
+                if h:
+                    for i in range(min(sh.DragQueryFileW(h, 0xFFFFFFFF, None, 0), 20)):
+                        buf = ctypes.create_unicode_buffer(520)
+                        sh.DragQueryFileW(h, i, buf, 520)
+                        out.append(buf.value)
+            finally:
+                user32.CloseClipboard()
+            return out
+        except Exception:
+            return []
+
     def feed_clipboard(self):
+        files = self.clipboard_files()
+        if files:
+            self.eat_files(files)
+            return
+        if self.store_mode and ImageGrab is not None and IS_WIN:      # Screenshot (Win+Umschalt+S) ablegen
+            try:
+                img = ImageGrab.grabclipboard()
+            except Exception:
+                img = None
+            if img is not None and hasattr(img, "save"):
+                self.stash_image(img)
+                return
         self.peer_event("feed")
         try:
             text = self.root.clipboard_get()
         except tk.TclError:
             self.say("Die Zwischenablage ist leer.", 3, speak=False)
+            return
+        paths = [q.strip().strip('"') for q in text.strip().splitlines()]
+        paths = [q for q in paths if len(q) > 3 and os.path.exists(q)]       # "Als Pfad kopieren" aus dem Explorer
+        if paths:
+            self.eat_files(paths)
+            return
+        if self.store_mode:
+            self.stash_text(text)
             return
         words = re.findall(r"[A-Za-zÄÖÜäöüß]{2,20}", text)[:5]
         if not words:
@@ -12332,6 +12467,151 @@ class Nova:
         if speed > 200:
             self.bump_until = time.time() + 0.35
 
+    def toggle_store_mode(self):
+        self.store_mode = not self.store_mode
+        self.s["store_mode"] = self.store_mode
+        self.save()
+        self.say("Ziehen und Einfügen: Ich lege es im Speicher ab." if self.store_mode
+                 else "Ziehen und Einfügen: Ich fresse es wieder.", 4, speak=False)
+
+    def open_stash(self):
+        try:
+            os.makedirs(STASH_DIR, exist_ok=True)
+            os.startfile(STASH_DIR)
+        except (OSError, AttributeError):
+            self.say("Speicher konnte nicht geöffnet werden.", 3, speak=False)
+
+    def stash_recent(self, n=5):
+        """Die neuesten Einträge im Speicher (für die kreisenden Kugeln)."""
+        try:
+            with os.scandir(STASH_DIR) as it:
+                found = sorted(it, key=lambda e: e.stat().st_mtime, reverse=True)[:n]
+            return [{"name": e.name, "copy": e.path} for e in found]
+        except OSError:
+            return []
+
+    def stash_image(self, img):
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+        try:
+            img.convert("RGB").save(self.stash_name(f"Screenshot {stamp}.png"))
+            self.set_emotion_override("happy", 3)
+            self.say("Screenshot im Speicher abgelegt.", 3, speak=False)
+        except (OSError, ValueError):
+            self.say("Das konnte ich nicht ablegen.", 3, speak=False)
+
+    def toggle_screenshot_nova(self):
+        self.s["screenshot_nova"] = not self.s.get("screenshot_nova", True)
+        self.save()
+        self.say("Screenshots: Ich bin mit drauf." if self.s["screenshot_nova"]
+                 else "Screenshots: Ich verstecke mich kurz.", 4, speak=False)
+
+    def stash_screenshot(self):
+        """Ganzen Bildschirm aufnehmen und im Speicher ablegen (kurz warten, bis das Menü weg ist)."""
+        if ImageGrab is None:
+            self.say("Dafür fehlt das Paket Pillow.", 4, speak=False)
+            return
+        hide = not self.s.get("screenshot_nova", True)
+        if hide:
+            try:
+                self.root.withdraw()                 # NOVA ist nicht auf dem Bild
+            except tk.TclError:
+                hide = False
+
+        def grab():
+            img = None
+            try:
+                try:
+                    img = ImageGrab.grab(all_screens=True)
+                except TypeError:
+                    img = ImageGrab.grab()
+            except Exception:
+                img = None
+            finally:
+                if hide:
+                    try:
+                        self.root.deiconify()
+                        self.root.attributes("-topmost", True)
+                    except tk.TclError:
+                        pass
+                    self.last_tick = time.time()
+            if img is None:
+                self.say("Der Screenshot hat nicht geklappt.", 3, speak=False)
+            else:
+                self.stash_image(img)
+        self.root.after(450, grab)
+
+    def copy_stash_item(self, path):
+        """Wie Strg+C: Text (.txt) als Text, alles andere als Datei in die Zwischenablage."""
+        name = os.path.basename(path)
+        try:
+            if path.lower().endswith(".txt") and os.path.getsize(path) <= 1_000_000:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                self.root.update()                       # Inhalt bleibt auch nach dem Schließen erhalten
+            elif IS_WIN and path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+                env = dict(os.environ, NOVA_COPY=path)             # Bild wie Strg+C auf ein Bild
+                subprocess.Popen(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command",
+                     "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                     "$i=[System.Drawing.Image]::FromFile($env:NOVA_COPY);"
+                     "[System.Windows.Forms.Clipboard]::SetImage($i)"],
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            elif IS_WIN:
+                env = dict(os.environ, NOVA_COPY=path)
+                subprocess.Popen(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Set-Clipboard -LiteralPath $env:NOVA_COPY"],
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            else:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(path)
+                self.root.update()
+        except (OSError, tk.TclError):
+            self.say("Das konnte ich nicht kopieren.", 3, speak=False)
+            return
+        self.set_emotion_override("happy", 2)
+        self.say(f"Kopiert: {name[:24]}", 3, speak=False)
+
+    def stash_name(self, name):
+        os.makedirs(STASH_DIR, exist_ok=True)
+        base, ext = os.path.splitext(name)
+        dst, n = os.path.join(STASH_DIR, name), 2
+        while os.path.exists(dst):
+            dst, n = os.path.join(STASH_DIR, f"{base} ({n}){ext}"), n + 1
+        return dst
+
+    def stash_paths(self, paths):
+        ok = 0
+        for pth in paths[:20]:
+            try:
+                dst = self.stash_name(os.path.basename(pth.rstrip("\\/")) or "Datei")
+                if os.path.isdir(pth):
+                    shutil.copytree(pth, dst)
+                else:
+                    shutil.copy2(pth, dst)
+                ok += 1
+            except (OSError, shutil.Error):
+                pass
+        self.set_emotion_override("happy", 3)
+        self.say(f"{ok} im Speicher abgelegt." if ok else "Das konnte ich nicht ablegen.", 3, speak=False)
+
+    def stash_text(self, text):
+        t = text.strip()
+        if not t:
+            return
+        title = re.sub(r"[^\w\- ]", "", t.splitlines()[0])[:24].strip() or "Notiz"
+        try:
+            with open(self.stash_name(title + ".txt"), "w", encoding="utf-8") as f:
+                f.write(t)
+            self.set_emotion_override("happy", 3)
+            self.say("Text im Speicher abgelegt.", 3, speak=False)
+        except OSError:
+            self.say("Das konnte ich nicht ablegen.", 3, speak=False)
+
     def toggle_peer_mode(self):
         self.peer_mode = not self.peer_mode
         self.s["peer_mode"] = self.peer_mode
@@ -12430,7 +12710,7 @@ class Nova:
         key = random.choice(pool) if pool else None
         self.peer_send(pid, "toss", sx=self.x + self.display_width() / 2,
                        sy=self.y + self.display_height() * 0.4, rally=rally,
-                       icon=SHOP_ICONS.get(key, "🎾") if key else "🎾")
+                       icon=SHOP_SHORT.get(key, "") if key else "")
         if rally == 0:
             self.say("Fang!", 2, speak=False)
 
@@ -12459,9 +12739,11 @@ class Nova:
                 win.attributes("-transparentcolor", TRANS)
             except tk.TclError:
                 pass
-            cv = tk.Canvas(win, width=44, height=44, bg=TRANS, highlightthickness=0)
+            cv = tk.Canvas(win, width=52, height=52, bg=TRANS, highlightthickness=0)
             cv.pack()
-            cv.create_text(22, 22, text=str(d.get("icon", "🎾")), font=("Segoe UI Emoji", 24))
+            cv.create_oval(3, 3, 49, 49, fill=PANEL2, outline=ACCENT, width=3)
+            cv.create_arc(9, 9, 43, 43, start=100, extent=70, style=tk.ARC, outline=LIGHT, width=2)
+            cv.create_text(26, 28, text=str(d.get("icon", ""))[:6], fill=ACCENT, font=("Consolas", 8, "bold"))
             self.toy = {"win": win, "sx": sx, "sy": sy, "tx": tx, "ty": ty, "t0": now,
                         "T": clamp(math.hypot(tx - sx, ty - sy) / 700, 0.6, 1.4),
                         "from": int(d["from"]), "rally": int(d.get("rally", 0))}
@@ -12486,7 +12768,7 @@ class Nova:
             x = t["sx"] + (t["tx"] - t["sx"]) * u
             y = t["sy"] + (t["ty"] - t["sy"]) * u - 480 * u * (1 - u)
             try:
-                t["win"].geometry(f"44x44+{int(x - 22)}+{int(y - 22)}")
+                t["win"].geometry(f"52x52+{int(x - 26)}+{int(y - 26)}")
             except tk.TclError:
                 self.toy = None
             return
@@ -13772,6 +14054,7 @@ class Nova:
         self.update_living_cursor(now, fk)
         self.update_cursor_play(now, fk)
         self.update_peers(now, fk)
+        self.poll_paste(now)
         if (self.feeding or self.prompt) and now > self.feed_deadline:
             self.cancel_feed()
         if self.radial_window is not None:
