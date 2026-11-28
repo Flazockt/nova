@@ -233,6 +233,9 @@ PEER_DIR = os.path.join(tempfile.gettempdir(), "nova_peers")   # gemeinsamer Ord
 PEER_STALE = 3.0                    # Sekunden ohne Lebenszeichen = Instanz gilt als beendet
 PEER_MEET_DIST = 120                # Abstand (px), ab dem sich zwei NOVAs begrüßen
 PEER_HELLO = ("Hey {n}!", "Oh, {n}, da bist du ja.", "Na, {n}, alles klar?", "Hi {n}!")
+PEER_EV = {"pet": ("{n} wird gestreichelt. Ich will auch!", "Aww, {n} wird verwöhnt."),
+           "feed": ("{n} isst. Mir knurrt auch der Magen.", "Lecker, {n}?"),
+           "burst": ("Huch! {n} ist geplatzt!", "{n}?! Alles okay?")}
 PEER_REPLY = ("Hi! Schön dich zu sehen.", "Hey, was machst du so?", "Na, du auch hier?", "Hallo! Alles gut bei dir?")
 EMOTION_IMAGE_DIR = os.path.join(HERE, "emotion_images")
 LEGACY_SPRITE = os.path.join(HERE, "sprite.png")
@@ -3361,6 +3364,7 @@ class Nova:
         self.peer_file = os.path.join(PEER_DIR, f"{os.getpid()}.json")
         self.peers, self.peer_sync = [], 0.0
         self.peer_tgt, self.peer_until, self.peer_cd = None, 0.0, 0.0
+        self.peer_act, self.toy = None, None
         atexit.register(self.peer_leave)
         self.burst_until = self.burst_t0 = 0.0
         self.burst_parts, self.burst_blood, self.burst_shards_list = [], [], []
@@ -3442,6 +3446,7 @@ class Nova:
         self.s["last_goodbye"] = goodbye
         self.quit_duration = 3.2 if self.voice_enabled else 2.4
         self.peer_leave()
+        self.destroy_toy()
         self.stop_voice()
         self.say(goodbye, self.quit_duration, speak=self.voice_enabled)
         self.save()
@@ -6444,6 +6449,7 @@ class Nova:
         self.add_points(1)
         self.quest_event("pet")
         self.set_emotion_override("happy", 4)
+        self.peer_event("pet")
         self.say(random.choice(PET_LINES), 3, ai_context="pet")
 
     def toggle_sleep(self):
@@ -9963,6 +9969,7 @@ class Nova:
         self.say(" ".join(texts[-2:]), 7, ai_context="feed")
 
     def feed_word(self):
+        self.peer_event("feed")
         if self.mini:
             self.say("Im Vollbild bin ich zu klein zum Essen.", 3, speak=False)
             return
@@ -10057,6 +10064,7 @@ class Nova:
             self.feed_clipboard()
 
     def feed_clipboard(self):
+        self.peer_event("feed")
         try:
             text = self.root.clipboard_get()
         except tk.TclError:
@@ -12347,7 +12355,7 @@ class Nova:
             tmp = self.peer_file + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"pid": os.getpid(), "ts": now, "x": self.x, "y": self.y,
-                           "w": self.display_width(), "tgt": self.peer_tgt,
+                           "w": self.display_width(), "tgt": self.peer_tgt, "sl": self.sleeping,
                            "name": str(self.s.get("name", ""))[:20]}, f)
             os.replace(tmp, self.peer_file)
             peers = []
@@ -12355,6 +12363,9 @@ class Nova:
                 if not name.endswith(".json") or name == os.path.basename(self.peer_file):
                     continue
                 path = os.path.join(PEER_DIR, name)
+                if name.startswith("m_"):
+                    self.peer_read_msg(path, name, now)
+                    continue
                 try:
                     with open(path, encoding="utf-8") as f:
                         d = json.load(f)
@@ -12372,11 +12383,129 @@ class Nova:
         except (OSError, ValueError, TypeError):
             self.peers = []
 
+    def peer_send(self, pid, kind, **kw):
+        try:
+            os.makedirs(PEER_DIR, exist_ok=True)
+            path = os.path.join(PEER_DIR, f"m_{pid}_{time.time_ns()}.json")
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump({"k": kind, "from": os.getpid(), "name": str(self.s.get("name", ""))[:20], **kw}, f)
+            os.replace(path + ".tmp", path)
+        except OSError:
+            pass
+
+    def peer_read_msg(self, path, name, now):
+        try:
+            if name.startswith(f"m_{os.getpid()}_") and name.endswith(".json"):
+                with open(path, encoding="utf-8") as f:
+                    d = json.load(f)
+                os.remove(path)
+                self.peer_on_msg(d, now)
+            elif now - os.path.getmtime(path) > 30:
+                os.remove(path)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def peer_on_msg(self, d, now):
+        k, n = d.get("k"), d.get("name") or "du"
+        if k == "toss":
+            self.spawn_toy(d, now)
+        elif k == "tag" and not self.sleeping:
+            self.say("Warte, ich krieg dich!", 3, speak=False)
+            self.peer_act = ["chase", int(d["from"]), now + 8]
+            self.cursor_pause_until = 0.0
+            self.peer_cd = now + 40
+        elif k == "ev" and not self.sleeping and random.random() < 0.7:
+            self.say(random.choice(PEER_EV.get(d.get("e"), PEER_EV["pet"])).format(n=n), 3, speak=False)
+            self.set_emotion_override("happy", 3)
+
+    def peer_event(self, kind):
+        if self.peer_mode:
+            for d in self.peers:
+                self.peer_send(int(d["pid"]), "ev", e=kind)
+
+    def peer_throw(self, pid, rally=0):
+        if self.quitting or not self.peer_mode or self.sleeping:
+            return
+        pool = list(self.s.get("worn") or [])
+        key = random.choice(pool) if pool else None
+        self.peer_send(pid, "toss", sx=self.x + self.display_width() / 2,
+                       sy=self.y + self.display_height() * 0.4, rally=rally,
+                       icon=SHOP_ICONS.get(key, "🎾") if key else "🎾")
+        if rally == 0:
+            self.say("Fang!", 2, speak=False)
+
+    def peer_action(self, pid):
+        if self.quitting or not self.peer_mode or self.sleeping:
+            return
+        r = random.random()
+        if r < 0.5:
+            self.peer_throw(pid)
+        elif r < 0.8 and self.walking:
+            self.say("Fang mich!", 2, speak=False)
+            self.peer_act = ["flee", pid, time.time() + 2.5]
+            self.cursor_pause_until = 0.0
+            self.peer_send(pid, "tag")
+
+    def spawn_toy(self, d, now):
+        self.destroy_toy()
+        try:
+            tx, ty = self.x + self.display_width() / 2, self.y + self.display_height() * 0.4
+            sx, sy = float(d["sx"]), float(d["sy"])
+            win = tk.Toplevel(self.root)
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.config(bg=TRANS)
+            try:
+                win.attributes("-transparentcolor", TRANS)
+            except tk.TclError:
+                pass
+            cv = tk.Canvas(win, width=44, height=44, bg=TRANS, highlightthickness=0)
+            cv.pack()
+            cv.create_text(22, 22, text=str(d.get("icon", "🎾")), font=("Segoe UI Emoji", 24))
+            self.toy = {"win": win, "sx": sx, "sy": sy, "tx": tx, "ty": ty, "t0": now,
+                        "T": clamp(math.hypot(tx - sx, ty - sy) / 700, 0.6, 1.4),
+                        "from": int(d["from"]), "rally": int(d.get("rally", 0))}
+            self.cursor_pause_until = now + 3
+        except (tk.TclError, KeyError, ValueError):
+            self.toy = None
+
+    def destroy_toy(self):
+        if self.toy:
+            try:
+                self.toy["win"].destroy()
+            except tk.TclError:
+                pass
+            self.toy = None
+
+    def update_toy(self, now):
+        t = self.toy
+        if not t:
+            return
+        u = (now - t["t0"]) / t["T"]
+        if u < 1:
+            x = t["sx"] + (t["tx"] - t["sx"]) * u
+            y = t["sy"] + (t["ty"] - t["sy"]) * u - 480 * u * (1 - u)
+            try:
+                t["win"].geometry(f"44x44+{int(x - 22)}+{int(y - 22)}")
+            except tk.TclError:
+                self.toy = None
+            return
+        pid, rally = t["from"], t["rally"]
+        self.destroy_toy()
+        self.add_points(1, announce=False)
+        self.set_emotion_override("happy", 3)
+        if rally < 6 and random.random() < 0.75:
+            self.say("Gefangen! Zurück!", 2, speak=False)
+            self.root.after(1200, lambda: self.peer_throw(pid, rally + 1))
+        else:
+            self.say("Gefangen! Das war lustig.", 3, speak=False)
+
     def update_peers(self, now, fk):
         """Zwei NOVA-Programme: eine läuft auf die andere zu, beide begrüßen sich und bleiben kurz stehen."""
         if not self.peer_mode:
             return
-        if now - self.peer_sync >= 0.4:
+        self.update_toy(now)
+        if now - self.peer_sync >= 0.25:
             self.peer_sync = now
             self.peer_sync_files(now)
         if not self.peers or self.cursor_busy() or self.burst_hide():
@@ -12394,9 +12523,25 @@ class Nova:
             return
         d, dx = near
         look = 1 if dx >= 0 else -1
+        act = self.peer_act
+        if act:                                                       # Jagen / Fliehen
+            if now > act[2] or not self.moving():
+                self.peer_act = None
+            elif act[0] == "chase" and abs(dx) < 55:
+                self.say("Hab dich!", 2, speak=False)
+                self.set_emotion_override("happy", 3)
+                self.cursor_pause_until = now + 2
+                self.peer_act = None
+            else:
+                self.dir = look if act[0] == "chase" else -look
+            return
         if abs(dx) < PEER_MEET_DIST and now >= self.peer_cd:        # Begegnung
-            self.peer_cd = now + 60
+            self.peer_cd = now + 45
             self.peer_tgt = None
+            if d.get("sl") and not self.sleeping:                    # zusammen schlafen
+                self.sleeping = True
+                self.say("Zzz... ich leg mich dazu.", 3, speak=False)
+                return
             self.cursor_pause_until = now + 5
             self.cursor_look_dir = self.dir = look
             self.cursor_attention_until = now + 5
@@ -12404,6 +12549,7 @@ class Nova:
             first = os.getpid() < int(d["pid"])
             if first:
                 self.say(random.choice(PEER_HELLO).format(n=d.get("name") or "du"), 3, speak=False)
+                self.root.after(3500, lambda: self.peer_action(int(d["pid"])))
             else:
                 self.root.after(1500, lambda: None if self.quitting else
                                 self.say(random.choice(PEER_REPLY), 3, speak=False))
@@ -12418,7 +12564,7 @@ class Nova:
             else:
                 self.dir = look
         elif (now >= self.peer_cd and self.walking and self.moving()
-              and random.random() < 0.003 * fk):
+              and random.random() < (0.01 if d.get("sl") else 0.003) * fk):
             self.peer_tgt, self.peer_until = int(d["pid"]), now + 15
             self.dir = look
 
@@ -12458,6 +12604,7 @@ class Nova:
 
     def start_burst(self, side):
         """Zerspringt in Stücke; pixeliges Blut bleibt an der Aufprallstelle (NOVA steht still)."""
+        self.peer_event("burst")
         now, h = time.time(), self.figure_h()
         self.burst_until, self.burst_t0 = now + BURST_SECONDS, now
         self.stop_voice()                              # Sprachausgabe sofort beenden (Aufprall)
